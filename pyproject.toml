@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "db-inspector"
+version = "0.1.0"
+description = "Terminal database inspector: browse schemas, run queries, export CSV/Excel."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "textual>=1.0",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+mysql = ["pymysql>=1.1"]
+mssql = ["pyodbc>=5.0"]
+oracle = ["oracledb>=2.0"]
+duckdb = ["duckdb-engine>=0.13"]
+all = ["db-inspector[postgres,mysql,mssql,oracle,duckdb]"]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/db_inspector"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
