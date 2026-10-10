@@ -5,7 +5,7 @@ from pathlib import Path
 
 from rich.console import Group
 from rich.text import Text
-from textual import work
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -13,8 +13,11 @@ from textual.widgets import Footer, Header, Input, Static, Tree
 from textual.widgets.tree import TreeNode
 from textual.worker import get_current_worker
 
-from ..database import Database, ForeignKey, Relation, ServerInfo, TableDetails
+from ..connection_setup import Saved
+from ..database import ConnectError, Database, ForeignKey, Relation, ServerInfo, TableDetails, is_auth_error
+from ..detect import DetectionError, Target
 from ..render import connection_table, table_details
+from .screens import ConnectionForm, ConnectionsScreen, PasswordScreen
 
 
 @dataclass(frozen=True)
@@ -35,16 +38,22 @@ class InspectorApp(App):
     AUTO_FOCUS = "#tree"
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("c", "connections", "Connections"),
+        Binding("a", "add_connection", "Add connection"),
         Binding("slash", "focus_filter", "Filter"),
-        Binding("i", "show_connection", "Connection"),
+        Binding("i", "show_connection", "Info"),
         Binding("r", "reload", "Reload schema"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
+    NEEDS_DATABASE = {"focus_filter", "focus_tree", "show_connection", "reload", "clear_filter"}
 
-    def __init__(self, db: Database, info: ServerInfo):
+    def __init__(self, target: Target | None = None, error: str | None = None, cwd: Path | None = None):
         super().__init__()
-        self.db = db
-        self.info = info
+        self.cwd = cwd or Path.cwd()
+        self.initial_target = target
+        self.initial_error = error
+        self.db: Database | None = None
+        self.info: ServerInfo | None = None
         self.schemas: list[str] = []
         self.relations: dict[str, list[Relation]] = {}  # loaded schemas only
         self.expanded: set[str] = set()
@@ -57,27 +66,144 @@ class InspectorApp(App):
         with Horizontal():
             with Vertical(id="sidebar"):
                 yield FilterInput(placeholder="Filter tables  ( / )", id="filter")
-                yield Tree[NodeData](self._root_label(), id="tree")
+                yield Tree[NodeData](Text("No database", style="dim"), id="tree")
             with VerticalScroll(id="main"):
                 yield Static(id="details")
         yield Footer()
 
     def on_mount(self) -> None:
-        self.sub_title = f"{self.info.product} {self.info.version} · {self.db.target.source}"
-        self.action_reload()
+        if self.initial_target is not None:
+            self.open_target(self.initial_target)
+            return
+        self._show_empty(self.initial_error)
+        if self.initial_error:
+            self.notify(self.initial_error, title="Couldn't open the connection", severity="error", timeout=10)
+        self.action_connections()  # nothing to open: start on the chooser
+
+    def on_unmount(self) -> None:
+        if self.db is not None:
+            self.db.close()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if len(self.screen_stack) > 1:
+            return action == "quit"  # a dialog is open; it handles its own keys
+        if self.db is None and action in self.NEEDS_DATABASE:
+            return False
+        return True
 
     @property
     def tree(self) -> Tree[NodeData]:
         return self.query_one("#tree", Tree)
 
     def _root_label(self) -> Text:
+        if self.db is None or self.info is None:
+            return Text("No database", style="dim")
         database = self.db.target.url.database
         name = Path(database).name if self.info.dialect in ("sqlite", "duckdb") and database else database
         return Text(name or self.info.product, style="bold")
 
+    # Connecting
+
+    def action_connections(self) -> None:
+        self.push_screen(ConnectionsScreen(self.cwd), self._chosen)
+
+    def action_add_connection(self) -> None:
+        self.push_screen(ConnectionForm(self.cwd), self._chosen)
+
+    def _chosen(self, saved: Saved | None) -> None:
+        if saved is None:
+            return
+        try:
+            target = saved.target()
+        except DetectionError as exc:
+            self.notify(str(exc), title=f"Couldn't open {saved.name}", severity="error", timeout=10)
+            return
+        self.open_target(target)
+
+    def open_target(self, target: Target, retrying: Target | None = None) -> None:
+        """Connect in the background. `retrying` is the password-less target after a password prompt."""
+        self.sub_title = f"connecting to {target.source}…"
+        self.query_one("#main").loading = True
+        self._connect(target, retrying)
+
+    @work(thread=True, exclusive=True, group="connect")
+    def _connect(self, target: Target, retrying: Target | None) -> None:
+        try:
+            db = Database(target)
+        except ConnectError as exc:
+            self.call_from_thread(self._connect_failed, target, exc, retrying)
+            return
+        try:
+            info = db.server_info()
+        except ConnectError as exc:
+            db.close()
+            self.call_from_thread(self._connect_failed, target, exc, retrying)
+            return
+        self.call_from_thread(self._connected, db, info)
+
+    def _connect_failed(self, target: Target, exc: ConnectError, retrying: Target | None) -> None:
+        self.query_one("#main").loading = False
+        if is_auth_error(exc) and (retrying is not None or target.url.password is None):
+            base = retrying or target
+            error = "Wrong password, try again." if retrying else None
+
+            def entered(password: str | None) -> None:
+                if password is None:
+                    self._connect_abandoned(None)
+                else:
+                    self.open_target(base.with_password(password), retrying=base)
+
+            self.push_screen(PasswordScreen(base, error), entered)
+            return
+        self._connect_abandoned(str(exc))
+
+    def _connect_abandoned(self, error: str | None) -> None:
+        if self.db is None:
+            self._show_empty(error)
+        else:  # keep the database we already had open
+            self._set_sub_title()
+        if error:
+            self.notify(error, title="Couldn't connect", severity="error", timeout=10)
+
+    def _connected(self, db: Database, info: ServerInfo) -> None:
+        previous = self.db
+        self.db, self.info = db, info
+        if previous is not None:
+            previous.close()
+        self._set_sub_title()
+        self.tree.root.set_label(self._root_label())
+        self.refresh_bindings()
+        self.action_reload()
+
+    def _set_sub_title(self) -> None:
+        if self.db is None or self.info is None:
+            self.sub_title = "no database"
+        else:
+            self.sub_title = f"{self.info.product} {self.info.version} · {self.db.target.source}"
+
+    def _show_empty(self, error: str | None) -> None:
+        self.workers.cancel_group(self, "relations")
+        self.schemas, self.relations, self.expanded = [], {}, set()
+        self.details = self.referenced_by = None
+        self.tree.clear()
+        self.tree.root.set_label(self._root_label())
+        self.query_one("#main").loading = False
+        parts = [Text("No database connected", style="bold"), Text("")]
+        if error:
+            parts += [Text(error, style="red"), Text("")]
+        parts += [
+            Text.assemble(("c", "bold"), "  choose a saved connection"),
+            Text.assemble(("a", "bold"), "  add a connection"),
+        ]
+        self.query_one("#details", Static).update(Group(*parts))
+        self._set_sub_title()
+        self.refresh_bindings()
+
     # Schema tree
 
     def action_reload(self) -> None:
+        if self.db is None:
+            return
         self.workers.cancel_group(self, "relations")
         self.db.clear_cache()
         self.schemas, self.relations, self.expanded = [], {}, set()
@@ -182,11 +308,13 @@ class InspectorApp(App):
         self.query_one("#filter", Input).value = ""
         self.tree.focus()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    @on(Input.Changed, "#filter")
+    def filter_changed(self, event: Input.Changed) -> None:
         self.filter_text = event.value.strip()
         self._render_tree()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    @on(Input.Submitted, "#filter")
+    def filter_submitted(self, event: Input.Submitted) -> None:
         self.tree.focus()
         first = next(self._relation_nodes(self.tree.root), None)
         if first is not None:
@@ -201,6 +329,8 @@ class InspectorApp(App):
     # Main pane
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[NodeData]) -> None:
+        if self.db is None:
+            return
         if isinstance(event.node.data, Relation):
             self.query_one("#main").loading = True
             self.load_details(event.node.data)

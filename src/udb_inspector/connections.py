@@ -44,6 +44,10 @@ class ConfigError(DetectionError):
     """A config file is malformed or refers to a variable that isn't set."""
 
 
+class NothingToOpen(DetectionError):
+    """No target given and no default connection configured."""
+
+
 def global_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
     return Path(base) / "udb-inspector"
@@ -86,7 +90,7 @@ class Config:
 
     def default_name(self) -> str:
         if not self.connections:
-            raise ConfigError(f"{tilde(self.path)} has no connections yet. Run: dbi init{self._flag}")
+            raise NothingToOpen(f"{tilde(self.path)} has no connections yet.")
         if "default" in self.connections:
             return "default"
         if len(self.connections) == 1:
@@ -205,10 +209,7 @@ def resolve(target: str | None, *, global_only: bool = False, cwd: Path | None =
     if configs:
         config = configs[0]
         return config.target(config.default_name())
-    raise DetectionError(
-        "No database given. Pass a URL or file, run `dbi init` to set up this project, "
-        "or `dbi init -g` for a global connection."
-    )
+    raise NothingToOpen("No database given, and no saved connection to open.")
 
 
 def tilde(path: Path) -> str:

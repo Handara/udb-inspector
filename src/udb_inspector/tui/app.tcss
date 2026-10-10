@@ -15,3 +15,64 @@
 #main {
     padding: 1 2;
 }
+
+ModalScreen {
+    align: center middle;
+}
+
+.dialog {
+    width: 84;
+    max-width: 100%;
+    height: auto;
+    max-height: 90%;
+    padding: 1 2;
+    border: round $primary;
+    background: $surface;
+}
+
+.dialog.small {
+    width: 60;
+}
+
+.dialog .title {
+    text-style: bold;
+    margin-bottom: 1;
+}
+
+.dialog .hint {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+.dialog .error {
+    color: $error;
+}
+
+.dialog OptionList {
+    height: auto;
+    max-height: 20;
+    border: none;
+}
+
+.dialog .row {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.dialog .field-label {
+    width: 11;
+}
+
+.dialog .row Input,
+.dialog .row Select {
+    width: 1fr;
+}
+
+.dialog .buttons {
+    height: auto;
+    margin-top: 1;
+}
+
+.dialog .buttons Button {
+    margin-right: 1;
+}

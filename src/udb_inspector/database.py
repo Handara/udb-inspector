@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,14 @@ warnings.filterwarnings(
 
 class ConnectError(Exception):
     """The database can't be reached, or its driver isn't installed."""
+
+
+AUTH_ERROR = re.compile(r"password|authentication|access denied|login failed|ORA-01017", re.IGNORECASE)
+
+
+def is_auth_error(exc: Exception) -> bool:
+    """Whether the server turned down the login (as opposed to being unreachable)."""
+    return bool(AUTH_ERROR.search(str(exc)))
 
 
 @dataclass(frozen=True)

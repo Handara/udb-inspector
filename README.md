@@ -25,20 +25,49 @@ pytest
 ## Use
 
 ```sh
-dbi postgres://user@localhost/shop        # a URL (asks for the password if needed)
-dbi db.sqlite3                            # a SQLite or DuckDB file
-dbi init                                  # save a connection for this project
-dbi                                       # open this project's connection
-dbi staging                               # open a saved connection by name
-dbi -g                                    # use the global connections, not the project's
-dbi --info                                # print the connection details, no UI
+dbi                     # opens the app: this project's connection, else the global one, else the chooser
+dbi staging             # a saved connection by name
+dbi -g                  # the global connections only, even inside a project
+dbi postgres://u@h/db   # a URL
+dbi db.sqlite3          # a SQLite or DuckDB file
+dbi --info              # print the connection details instead of opening the app
+```
+
+Everything else happens in the app. With nothing to open it starts on the
+connection chooser.
+
+| Key | Action |
+| --- | --- |
+| `c` | Choose a saved connection (`enter` opens, `a` adds, `d` deletes) |
+| `a` | Add a connection |
+| `↑` `↓`, `enter` | Move through the sidebar; `enter` opens a table or expands a schema |
+| `/` | Filter tables by name (`enter` jumps to the first match, `esc` clears) |
+| `i` | Show the connection details again |
+| `r` | Reload the schema |
+| `q` | Quit |
+| `ctrl+p` | Command palette |
+
+Opening a table shows its columns (type, nullability, default, primary key,
+foreign key target), keys and indexes, the foreign keys it holds, and the
+tables whose foreign keys point at it. Opening a view shows its columns and
+its SQL definition.
+
+Try it with the demo database:
+
+```sh
+python scripts/make_demo_db.py demo.sqlite3 && dbi demo.sqlite3
 ```
 
 ## Connections
 
-Save connections once instead of typing URLs. A project keeps them in
-`.dbi.toml` at its root, which is safe to commit: it only names the variables
-that hold your settings, and the values stay in `.env`.
+Add connections in the app with `a`. The form can fill itself in from the
+variables in `.env` that look like database settings (`DATABASE_URL`,
+`DB_HOST`, `POSTGRES_*`, `PG*`, …), test the connection, and save it either for
+this project or globally.
+
+A project keeps its connections in `.dbi.toml` at its root, which is safe to
+commit: it only names the variables that hold your settings, and the values
+stay in `.env`. The form won't save a password into it.
 
 ```toml
 # .dbi.toml
@@ -57,14 +86,10 @@ password = "${REPLICA_PASSWORD}"
 options = { sslmode = "require" } # passed to the driver
 ```
 
-`dbi init` writes this for you. It reads `.env`, suggests the variables that
-look like database settings (`DATABASE_URL`, `DB_HOST`, `POSTGRES_*`, `PG*`, …),
-tests the connection, and appends it.
-
-Connections that don't belong to a project go in the global config with
-`dbi init -g`: `~/.config/udb-inspector/config.toml`, with secrets in
-`~/.config/udb-inspector/.env`. dbi refuses to read that file unless only you
-can (`chmod 600`).
+Global connections live in `~/.config/udb-inspector/config.toml`. A password
+typed into the form for a global connection is saved in
+`~/.config/udb-inspector/.env`, which dbi keeps private (`chmod 600`) and
+refuses to read otherwise. Deleting the connection removes it again.
 
 Which database `dbi` opens:
 
@@ -74,32 +99,12 @@ Which database `dbi` opens:
    A config with a single connection uses it as the default.
 4. `-g` skips `$DBI_URL` and the project.
 
-The app's header and `--info` show where the connection came from, such as
+The header and `--info` show where the connection came from, such as
 `project ~/code/shop/.dbi.toml [default]` or `global [staging]`.
 
 `${VAR}` is looked up in the environment first, then the env file. When no
-password is configured, Postgres falls back to `~/.pgpass`, and otherwise dbi
-asks for it.
-
-Try it with the demo database:
-
-```sh
-python scripts/make_demo_db.py demo.sqlite3 && dbi demo.sqlite3
-```
-
-| Key | Action |
-| --- | --- |
-| `↑` `↓`, `enter` | Move through the sidebar; `enter` opens a table or expands a schema |
-| `/` | Filter tables by name (`enter` jumps to the first match, `esc` clears) |
-| `i` | Show the connection details again |
-| `r` | Reload the schema |
-| `q` | Quit |
-| `ctrl+p` | Command palette |
-
-Opening a table shows its columns (type, nullability, default, primary key,
-foreign key target), keys and indexes, the foreign keys it holds, and the
-tables whose foreign keys point at it. Opening a view shows its columns and
-its SQL definition.
+password is configured, Postgres tries `~/.pgpass`, and otherwise the app asks
+for it.
 
 ## How the database type is detected
 

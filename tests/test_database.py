@@ -64,7 +64,7 @@ def test_cli_info(sample_db, capsys):
 
 
 def test_cli_error_goes_to_stderr(tmp_path, capsys):
-    assert main([str(tmp_path / "nope.db")]) == 1
+    assert main([str(tmp_path / "nope.db"), "--info"]) == 1
     assert "no such file" in capsys.readouterr().err
 
 

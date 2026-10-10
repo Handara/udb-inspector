@@ -12,6 +12,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "sqlalchemy>=2.0",
     "textual>=1.0",
+    "tomlkit>=0.12",
 ]
 
 [project.optional-dependencies]
