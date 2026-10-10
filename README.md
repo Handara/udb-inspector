@@ -5,7 +5,7 @@ a database, it works out what it is, and you browse it from a sidebar.
 
 ## Install
 
-From this folder, install `dbi` as a command with [pipx](https://pipx.pypa.io):
+From this folder, install `udbi` as a command with [pipx](https://pipx.pypa.io):
 
 ```sh
 pipx install --editable ".[postgres]"   # or mysql, mssql, oracle, duckdb, all; SQLite needs no extra
@@ -14,7 +14,7 @@ pipx install --editable ".[postgres]"   # or mysql, mssql, oracle, duckdb, all; 
 `--editable` means new commits take effect without reinstalling. To add a
 driver later: `pipx install --force --editable ".[postgres,mysql]"`.
 
-For working on dbi itself:
+For working on udbi itself:
 
 ```sh
 python -m venv .venv && . .venv/bin/activate
@@ -25,12 +25,12 @@ pytest
 ## Use
 
 ```sh
-dbi                     # opens the app: this project's connection, else the global one, else the chooser
-dbi staging             # a saved connection by name
-dbi -g                  # the global connections only, even inside a project
-dbi postgres://u@h/db   # a URL
-dbi db.sqlite3          # a SQLite or DuckDB file
-dbi --info              # print the connection details instead of opening the app
+udbi                     # opens the app: this project's connection, else the global one, else the chooser
+udbi staging             # a saved connection by name
+udbi -g                  # the global connections only, even inside a project
+udbi postgres://u@h/db   # a URL
+udbi db.sqlite3          # a SQLite or DuckDB file
+udbi --info              # print the connection details instead of opening the app
 ```
 
 Everything else happens in the app. With nothing to open it starts on the
@@ -55,7 +55,7 @@ its SQL definition.
 Try it with the demo database:
 
 ```sh
-python scripts/make_demo_db.py demo.sqlite3 && dbi demo.sqlite3
+python scripts/make_demo_db.py demo.sqlite3 && udbi demo.sqlite3
 ```
 
 ## Connections
@@ -65,12 +65,12 @@ variables in `.env` that look like database settings (`DATABASE_URL`,
 `DB_HOST`, `POSTGRES_*`, `PG*`, …), test the connection, and save it either for
 this project or globally.
 
-A project keeps its connections in `.dbi.toml` at its root, which is safe to
+A project keeps its connections in `.udbi.toml` at its root, which is safe to
 commit: it only names the variables that hold your settings, and the values
 stay in `.env`. The form won't save a password into it.
 
 ```toml
-# .dbi.toml
+# .udbi.toml
 env_file = ".env"                 # the default
 
 [connections.default]
@@ -88,19 +88,19 @@ options = { sslmode = "require" } # passed to the driver
 
 Global connections live in `~/.config/udb-inspector/config.toml`. A password
 typed into the form for a global connection is saved in
-`~/.config/udb-inspector/.env`, which dbi keeps private (`chmod 600`) and
+`~/.config/udb-inspector/.env`, which udbi keeps private (`chmod 600`) and
 refuses to read otherwise. Deleting the connection removes it again.
 
-Which database `dbi` opens:
+Which database `udbi` opens:
 
 1. A URL or file you pass.
 2. A name you pass: the project's connection with that name, else the global one.
-3. Nothing passed: `$DBI_URL`, then the project's `default` connection, then the global `default`.
+3. Nothing passed: `$UDBI_URL`, then the project's `default` connection, then the global `default`.
    A config with a single connection uses it as the default.
-4. `-g` skips `$DBI_URL` and the project.
+4. `-g` skips `$UDBI_URL` and the project.
 
 The header and `--info` show where the connection came from, such as
-`project ~/code/shop/.dbi.toml [default]` or `global [staging]`.
+`project ~/code/shop/.udbi.toml [default]` or `global [staging]`.
 
 `${VAR}` is looked up in the environment first, then the env file. When no
 password is configured, Postgres tries `~/.pgpass`, and otherwise the app asks

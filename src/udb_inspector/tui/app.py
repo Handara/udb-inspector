@@ -33,7 +33,7 @@ class FilterInput(Input):
 
 
 class InspectorApp(App):
-    TITLE = "dbi"
+    TITLE = "udbi"
     CSS_PATH = "app.tcss"
     AUTO_FOCUS = "#tree"
     BINDINGS = [

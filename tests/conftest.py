@@ -29,7 +29,7 @@ def sample_db(tmp_path):
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
-    """Never read the real global config, a .dbi.toml above the repo, or $DBI_URL."""
+    """Never read the real global config, a .udbi.toml above the repo, or $UDBI_URL."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    monkeypatch.delenv("DBI_URL", raising=False)
+    monkeypatch.delenv("UDBI_URL", raising=False)
     monkeypatch.chdir(tmp_path)

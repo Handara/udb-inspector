@@ -14,14 +14,14 @@ from .render import connection_table
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="dbi",
+        prog="udbi",
         description="Inspect a database from your terminal. Connections are set up inside the app.",
     )
     parser.add_argument(
         "target",
         nargs="?",
         help="database URL, SQLite/DuckDB file, or saved connection name "
-        "(default: $DBI_URL, then this project's default connection, then the global default)",
+        "(default: $UDBI_URL, then this project's default connection, then the global default)",
     )
     parser.add_argument(
         "-g", "--global", dest="global_only", action="store_true", help="use the global connections, ignoring the project"

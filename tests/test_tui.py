@@ -134,7 +134,7 @@ def test_add_a_global_connection_in_the_form(tmp_path, sample_db):
         await pilot.press("a")  # from the chooser
         form = app.screen
         assert isinstance(form, ConnectionForm)
-        assert form.scope == "global"  # no .dbi.toml or .env here
+        assert form.scope == "global"  # no .udbi.toml or .env here
         form.query_one("#name", Input).value = "demo"
         form.query_one("#type", Select).value = "sqlite"
         await pilot.pause()
@@ -168,7 +168,7 @@ def test_form_fills_in_from_env(tmp_path, sample_db):
         await pilot.press("ctrl+s")
         await settle(pilot)
 
-        assert '[connections.default]\nurl = "${DATABASE_URL}"' in (tmp_path / ".dbi.toml").read_text()
+        assert '[connections.default]\nurl = "${DATABASE_URL}"' in (tmp_path / ".udbi.toml").read_text()
         assert tree_labels(app) == ["orders", "users", "recent_orders view"]
 
     run(app, scenario)
@@ -188,7 +188,7 @@ def test_form_refuses_a_password_in_the_project_file(tmp_path):
         await pilot.pause()
         assert isinstance(app.screen, ConnectionForm)
         assert "${VAR}" in str(form.query_one("#status").content)
-        assert not (tmp_path / ".dbi.toml").exists()
+        assert not (tmp_path / ".udbi.toml").exists()
 
     run(app, scenario)
 

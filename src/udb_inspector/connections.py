@@ -1,6 +1,6 @@
-"""Named connections from a project's .dbi.toml or the global config.
+"""Named connections from a project's .udbi.toml or the global config.
 
-    # .dbi.toml
+    # .udbi.toml
     env_file = ".env"
 
     [connections.default]
@@ -30,7 +30,7 @@ from sqlalchemy.engine import URL
 
 from .detect import DEFAULT_DRIVERS, DetectionError, Target, detect, parse_url
 
-PROJECT_FILE = ".dbi.toml"
+PROJECT_FILE = ".udbi.toml"
 GLOBAL_FILE = "config.toml"
 
 TYPES = {**DEFAULT_DRIVERS, "sqlite": "sqlite", "duckdb": "duckdb"}
@@ -96,7 +96,7 @@ class Config:
         if len(self.connections) == 1:
             return next(iter(self.connections))
         names = ", ".join(self.connections)
-        raise ConfigError(f"{tilde(self.path)} has no connection called default. Pick one: dbi{self._flag} NAME ({names})")
+        raise ConfigError(f"{tilde(self.path)} has no connection called default. Pick one: udbi{self._flag} NAME ({names})")
 
     def target(self, name: str) -> Target:
         return connection_target(self.connections[name], self, f"{self.label} [{name}]")
@@ -172,7 +172,7 @@ def connection_target(raw: dict, config: Config, where: str) -> Target:
             query={key: interpolate(str(v), config.env(), where, config.env_file) for key, v in options.items()},
         )
 
-    # File databases are relative to the config file, not wherever dbi runs.
+    # File databases are relative to the config file, not wherever udbi runs.
     if url.get_backend_name() in FILE_TYPES and url.database and url.database != ":memory:":
         path = Path(url.database).expanduser()
         if not path.is_absolute():
@@ -184,8 +184,8 @@ def resolve(target: str | None, *, global_only: bool = False, cwd: Path | None =
     """Pick the database to open.
 
     An explicit URL or file wins. A name is looked up in the project config,
-    then the global one. With nothing given: $DBI_URL, the project's default
-    connection, then the global default. -g skips $DBI_URL and the project.
+    then the global one. With nothing given: $UDBI_URL, the project's default
+    connection, then the global default. -g skips $UDBI_URL and the project.
     """
     cwd = cwd or Path.cwd()
     if target and ("://" in target or Path(target).expanduser().exists()):
@@ -201,11 +201,11 @@ def resolve(target: str | None, *, global_only: bool = False, cwd: Path | None =
         for config in configs:
             if target in config.connections:
                 return config.target(target)
-        searched = " or ".join(config.label for config in configs) or "no .dbi.toml or global config found"
+        searched = " or ".join(config.label for config in configs) or "no .udbi.toml or global config found"
         raise DetectionError(f"{target}: no such file, and no connection with that name ({searched})")
 
-    if not global_only and (url := os.environ.get("DBI_URL")):
-        return Target(parse_url(url), "$DBI_URL")
+    if not global_only and (url := os.environ.get("UDBI_URL")):
+        return Target(parse_url(url), "$UDBI_URL")
     if configs:
         config = configs[0]
         return config.target(config.default_name())

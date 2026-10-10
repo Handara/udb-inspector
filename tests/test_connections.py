@@ -17,7 +17,7 @@ def project(tmp_path):
     root = tmp_path / "shop"
     write(root / ".env", "DB_HOST=db.internal\nDB_USER=app\nDB_PASSWORD='p@ss$word'\nEMPTY=\n")
     write(
-        root / ".dbi.toml",
+        root / ".udbi.toml",
         """
         env_file = ".env"
 
@@ -50,7 +50,7 @@ def test_project_default_from_env_file(project):
     assert (url.drivername, url.host, url.port, url.database) == ("postgresql+psycopg", "db.internal", 5433, "shop")
     assert (url.username, url.password) == ("app", "p@ss$word")
     assert dict(url.query) == {"sslmode": "require"}
-    assert target.source == f"project {project / '.dbi.toml'} [default]"
+    assert target.source == f"project {project / '.udbi.toml'} [default]"
 
 
 def test_project_found_from_a_subdirectory(project):
@@ -69,14 +69,14 @@ def test_file_database_is_relative_to_the_config(project):
 
 
 def test_missing_variable_names_the_env_file(project):
-    write(project / ".dbi.toml", '[connections.default]\nurl = "${NOPE}"\n')
+    write(project / ".udbi.toml", '[connections.default]\nurl = "${NOPE}"\n')
     with pytest.raises(ConfigError, match=r"\$\{NOPE\} is not set in the environment or .*\.env"):
         resolve(None, cwd=project)
 
 
 def test_interpolation_rules(project):
     write(
-        project / ".dbi.toml",
+        project / ".udbi.toml",
         '[connections.default]\ntype = "postgres"\nhost = "${EMPTY:-fallback}"\ndatabase = "a$$b"\nuser = "${EMPTY}"\n',
     )
     url = resolve(None, cwd=project).url
@@ -93,19 +93,19 @@ def test_interpolation_rules(project):
     ],
 )
 def test_bad_connections(project, body, message):
-    write(project / ".dbi.toml", f"[connections.default]\n{body}\n")
+    write(project / ".udbi.toml", f"[connections.default]\n{body}\n")
     with pytest.raises(ConfigError, match=message):
         resolve(None, cwd=project)
 
 
 def test_several_connections_without_default(project):
-    write(project / ".dbi.toml", '[connections.a]\nurl = "sqlite://"\n[connections.b]\nurl = "sqlite://"\n')
-    with pytest.raises(ConfigError, match=r"Pick one: dbi NAME \(a, b\)"):
+    write(project / ".udbi.toml", '[connections.a]\nurl = "sqlite://"\n[connections.b]\nurl = "sqlite://"\n')
+    with pytest.raises(ConfigError, match=r"Pick one: udbi NAME \(a, b\)"):
         resolve(None, cwd=project)
 
 
 def test_single_connection_is_the_default(project):
-    write(project / ".dbi.toml", '[connections.only]\nurl = "sqlite://"\n')
+    write(project / ".udbi.toml", '[connections.only]\nurl = "sqlite://"\n')
     assert resolve(None, cwd=project).source.endswith("[only]")
 
 
@@ -139,8 +139,8 @@ def test_global_env_file_must_be_private(tmp_path):
 
 def test_dbi_url_beats_configs_but_not_g(project, monkeypatch):
     write_global('[connections.default]\nurl = "postgres://global-host/app"\n')
-    monkeypatch.setenv("DBI_URL", "mysql://env-host/app")
-    assert resolve(None, cwd=project).source == "$DBI_URL"
+    monkeypatch.setenv("UDBI_URL", "mysql://env-host/app")
+    assert resolve(None, cwd=project).source == "$UDBI_URL"
     assert resolve(None, cwd=project, global_only=True).url.host == "global-host"
 
 
@@ -156,13 +156,13 @@ def test_explicit_url_and_file_win(project, sample_db):
 
 
 def test_unknown_name_without_configs(tmp_path):
-    with pytest.raises(DetectionError, match="no .dbi.toml or global config found"):
+    with pytest.raises(DetectionError, match="no .udbi.toml or global config found"):
         resolve("staging", cwd=tmp_path)
 
 
 def test_broken_toml(project):
-    write(project / ".dbi.toml", "[connections.default\n")
-    with pytest.raises(ConfigError, match=".dbi.toml"):
+    write(project / ".udbi.toml", "[connections.default\n")
+    with pytest.raises(ConfigError, match=".udbi.toml"):
         resolve(None, cwd=project)
 
 

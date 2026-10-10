@@ -52,11 +52,11 @@ PORT_TYPES = {"5432": "postgres", "3306": "mysql", "1433": "mssql", "1521": "ora
 
 HEADERS = {
     "project": [
-        "dbi connections for this project. Safe to commit: keep secrets in the env",
+        "udbi connections for this project. Safe to commit: keep secrets in the env",
         "file and refer to them as ${VAR} or ${VAR:-default}.",
     ],
     "global": [
-        "dbi global connections. Secrets go in .env next to this file (chmod 600)",
+        "udbi global connections. Secrets go in .env next to this file (chmod 600)",
         "and are referred to as ${VAR}.",
     ],
 }
@@ -121,7 +121,7 @@ def _load_project(cwd: Path) -> Config | None:
 
 
 def secret_variable(name: str) -> str:
-    return f"DBI_{name.upper().replace('-', '_')}_PASSWORD"
+    return f"UDBI_{name.upper().replace('-', '_')}_PASSWORD"
 
 
 def validate(config: Config, name: str, fields: dict[str, str]) -> str | None:
@@ -134,7 +134,7 @@ def validate(config: Config, name: str, fields: dict[str, str]) -> str | None:
         if not fields["url"]:
             return "URL is empty."
         if config.scope == "project" and "${" not in fields["url"] and _has_password(fields["url"]):
-            return "The URL holds a password, and .dbi.toml is meant to be committed. Put the URL in .env and use ${VAR}."
+            return "The URL holds a password, and .udbi.toml is meant to be committed. Put the URL in .env and use ${VAR}."
         return None
     if fields.get("type") in FILE_TYPES:
         return None if fields.get("database") else "File is empty."
@@ -143,7 +143,7 @@ def validate(config: Config, name: str, fields: dict[str, str]) -> str | None:
         return f"Port {port!r} is not a number."
     password = fields.get("password", "")
     if config.scope == "project" and password and "${" not in password:
-        return "Give the password as ${VAR}: .dbi.toml is meant to be committed."
+        return "Give the password as ${VAR}: .udbi.toml is meant to be committed."
     return None
 
 
@@ -177,7 +177,7 @@ def delete_connection(config: Config, name: str) -> None:
     password = str(doc["connections"][name].get("password", ""))
     del doc["connections"][name]
     _write(config.path, tomlkit.dumps(doc))
-    # Drop the password dbi saved for it, if any.
+    # Drop the password udbi saved for it, if any.
     variable = secret_variable(name)
     if config.scope == "global" and password == f"${{{variable}}}" and config.env_file.is_file():
         lines = config.env_file.read_text().splitlines(keepends=True)

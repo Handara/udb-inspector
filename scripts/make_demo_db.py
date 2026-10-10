@@ -1,4 +1,4 @@
-"""Create a small shop database in SQLite to try dbi against.
+"""Create a small shop database in SQLite to try udbi against.
 
     python scripts/make_demo_db.py [demo.sqlite3]
 """

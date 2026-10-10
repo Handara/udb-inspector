@@ -25,7 +25,7 @@ all = ["udb-inspector[postgres,mysql,mssql,oracle,duckdb]"]
 dev = ["pytest>=8"]
 
 [project.scripts]
-dbi = "udb_inspector.cli:main"
+udbi = "udb_inspector.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/udb_inspector"]
