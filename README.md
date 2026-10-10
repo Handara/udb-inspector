@@ -5,10 +5,21 @@ a database, it works out what it is, and you browse it from a sidebar.
 
 ## Install
 
+From this folder, install `dbi` as a command with [pipx](https://pipx.pypa.io):
+
+```sh
+pipx install --editable ".[postgres]"   # or mysql, mssql, oracle, duckdb, all; SQLite needs no extra
+```
+
+`--editable` means new commits take effect without reinstalling. To add a
+driver later: `pipx install --force --editable ".[postgres,mysql]"`.
+
+For working on dbi itself:
+
 ```sh
 python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"            # SQLite works out of the box
-pip install -e ".[postgres]"       # or mysql, mssql, oracle, duckdb, all
+pip install -e ".[dev,postgres]"
+pytest
 ```
 
 ## Use
@@ -100,9 +111,3 @@ its SQL definition.
 After connecting, the server's own version string refines the answer, so
 CockroachDB, Redshift and YugabyteDB are not reported as PostgreSQL, and
 MariaDB and TiDB are not reported as MySQL.
-
-## Tests
-
-```sh
-pytest
-```
