@@ -7,8 +7,9 @@ name = "db-inspector"
 version = "0.1.0"
 description = "Terminal database inspector: browse schemas, run queries, export CSV/Excel."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
+    "python-dotenv>=1.0",
     "sqlalchemy>=2.0",
     "textual>=1.0",
 ]

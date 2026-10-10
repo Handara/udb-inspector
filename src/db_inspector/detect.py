@@ -1,12 +1,7 @@
-"""Work out which database to open and how to reach it.
-
-A target is a database URL or a SQLite/DuckDB file. With no target we fall
-back to $DBI_URL, then $DATABASE_URL.
-"""
+"""Work out what kind of database a URL or file is."""
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +22,9 @@ class Target:
     def display_url(self) -> str:
         return self.url.render_as_string(hide_password=True)
 
+    def with_password(self, password: str) -> Target:
+        return Target(self.url.set(password=password), self.source)
+
 
 # Bare schemes get the driver we ship as an install extra, so
 # postgres://... works without knowing SQLAlchemy's driver names.
@@ -45,15 +43,11 @@ SQLITE_SUFFIXES = {".db", ".db3", ".sqlite", ".sqlite3"}
 DUCKDB_MAGIC = b"DUCK"  # at byte offset 8
 
 
-def resolve(target: str | None) -> Target:
-    if target:
-        if "://" in target:
-            return Target(parse_url(target), "URL")
-        return from_file(Path(target).expanduser())
-    for var in ("DBI_URL", "DATABASE_URL"):
-        if value := os.environ.get(var):
-            return Target(parse_url(value), f"${var}")
-    raise DetectionError("No database given. Pass a URL or file path, or set $DBI_URL.")
+def detect(target: str) -> Target:
+    """A URL or a SQLite/DuckDB file."""
+    if "://" in target:
+        return Target(parse_url(target), "URL")
+    return from_file(Path(target).expanduser())
 
 
 def parse_url(raw: str) -> URL:

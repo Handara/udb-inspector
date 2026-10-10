@@ -63,7 +63,7 @@ class InspectorApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.sub_title = f"{self.info.product} {self.info.version}".strip()
+        self.sub_title = f"{self.info.product} {self.info.version} · {self.db.target.source}"
         self.action_reload()
 
     @property

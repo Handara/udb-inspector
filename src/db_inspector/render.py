@@ -22,7 +22,7 @@ def connection_table(target: Target, info: ServerInfo) -> Table:
         ("Host", f"{url.host}:{url.port}" if url.host and url.port else url.host),
         ("User", url.username),
         ("Default schema", info.default_schema),
-        ("Detected from", target.source),
+        ("Source", target.source),
         ("URL", target.display_url),
     ]
     table = Table.grid(padding=(0, 2))
@@ -30,7 +30,7 @@ def connection_table(target: Target, info: ServerInfo) -> Table:
     table.add_column(overflow="fold")
     for label, value in rows:
         if value:
-            table.add_row(label, str(value))
+            table.add_row(label, Text(str(value)))  # Text, so "[default]" isn't read as markup
     return table
 
 

@@ -4,12 +4,12 @@ import io
 from rich.console import Console
 
 from db_inspector.database import Database
-from db_inspector.detect import resolve
+from db_inspector.detect import detect
 from db_inspector.tui.app import InspectorApp
 
 
 def make_app(sample_db):
-    db = Database(resolve(str(sample_db)))
+    db = Database(detect(str(sample_db)))
     return InspectorApp(db, db.server_info())
 
 

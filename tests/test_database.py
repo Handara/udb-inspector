@@ -5,11 +5,11 @@ import pytest
 from db_inspector import database
 from db_inspector.cli import main
 from db_inspector.database import ConnectError, Database, Key, Relation
-from db_inspector.detect import resolve
+from db_inspector.detect import detect
 
 
 def test_server_info_for_sqlite(sample_db):
-    info = Database(resolve(str(sample_db))).server_info()
+    info = Database(detect(str(sample_db))).server_info()
     assert info.product == "SQLite"
     assert info.version == sqlite3.sqlite_version
     assert info.dialect == "sqlite"
@@ -17,7 +17,7 @@ def test_server_info_for_sqlite(sample_db):
 
 
 def test_relations_lists_tables_then_views(sample_db):
-    db = Database(resolve(str(sample_db)))
+    db = Database(detect(str(sample_db)))
     assert db.schemas() == ["main"]
     assert db.relations("main") == [
         Relation("main", "orders", "table"),
@@ -29,7 +29,7 @@ def test_relations_lists_tables_then_views(sample_db):
 def test_sqlite_url_to_missing_file_is_not_created(tmp_path):
     path = tmp_path / "missing.db"
     with pytest.raises(ConnectError, match="does not exist"):
-        Database(resolve(f"sqlite:///{path}"))
+        Database(detect(f"sqlite:///{path}"))
     assert not path.exists()
 
 
@@ -39,7 +39,7 @@ def test_missing_driver_names_the_extra(monkeypatch):
 
     monkeypatch.setattr(database, "create_engine", fail)
     with pytest.raises(ConnectError, match=r"pip install 'db-inspector\[postgres\]'"):
-        Database(resolve("postgres://localhost/app"))
+        Database(detect("postgres://localhost/app"))
 
 
 @pytest.mark.parametrize(
@@ -69,7 +69,7 @@ def test_cli_error_goes_to_stderr(tmp_path, capsys):
 
 
 def test_describe_table(sample_db):
-    db = Database(resolve(str(sample_db)))
+    db = Database(detect(str(sample_db)))
     details = db.describe(Relation("main", "orders", "table"))
     columns = {column.name: column for column in details.columns}
     assert list(columns) == ["id", "user_id", "status"]
@@ -86,14 +86,14 @@ def test_describe_table(sample_db):
 
 
 def test_describe_unique_and_check(sample_db):
-    db = Database(resolve(str(sample_db)))
+    db = Database(detect(str(sample_db)))
     keys = db.describe(Relation("main", "users", "table")).keys
     assert Key("unique", None, "email") in keys
     assert Key("check", None, "age > 0") in keys
 
 
 def test_describe_view(sample_db):
-    db = Database(resolve(str(sample_db)))
+    db = Database(detect(str(sample_db)))
     details = db.describe(Relation("main", "recent_orders", "view"))
     assert [column.name for column in details.columns] == ["id", "user_id", "status"]
     assert "SELECT * FROM orders" in details.view_definition
@@ -101,7 +101,7 @@ def test_describe_view(sample_db):
 
 
 def test_referenced_by(sample_db):
-    db = Database(resolve(str(sample_db)))
+    db = Database(detect(str(sample_db)))
     incoming = db.referenced_by(Relation("main", "users", "table"))
     assert [(fk.table, fk.columns) for fk in incoming] == [("orders", ("user_id",))]
     assert db.referenced_by(Relation("main", "orders", "table")) == []
