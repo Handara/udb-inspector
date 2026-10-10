@@ -1,6 +1,6 @@
-# db-inspector
+# udb-inspector
 
-A terminal database inspector in the spirit of Salesforce Inspector: point it at
+A unified terminal database inspector in the spirit of Salesforce Inspector: point it at
 a database, it works out what it is, and you browse it from a sidebar.
 
 ## Install
@@ -62,8 +62,8 @@ look like database settings (`DATABASE_URL`, `DB_HOST`, `POSTGRES_*`, `PG*`, …
 tests the connection, and appends it.
 
 Connections that don't belong to a project go in the global config with
-`dbi init -g`: `~/.config/db-inspector/config.toml`, with secrets in
-`~/.config/db-inspector/.env`. dbi refuses to read that file unless only you
+`dbi init -g`: `~/.config/udb-inspector/config.toml`, with secrets in
+`~/.config/udb-inspector/.env`. dbi refuses to read that file unless only you
 can (`chmod 600`).
 
 Which database `dbi` opens:

@@ -1,6 +1,6 @@
 import pytest
 
-from db_inspector.detect import DetectionError, detect
+from udb_inspector.detect import DetectionError, detect
 
 
 @pytest.mark.parametrize(

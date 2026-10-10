@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "db-inspector"
+name = "udb-inspector"
 version = "0.1.0"
 description = "Terminal database inspector: browse schemas, run queries, export CSV/Excel."
 readme = "README.md"
@@ -20,14 +20,14 @@ mysql = ["pymysql>=1.1"]
 mssql = ["pyodbc>=5.0"]
 oracle = ["oracledb>=2.0"]
 duckdb = ["duckdb-engine>=0.13"]
-all = ["db-inspector[postgres,mysql,mssql,oracle,duckdb]"]
+all = ["udb-inspector[postgres,mysql,mssql,oracle,duckdb]"]
 dev = ["pytest>=8"]
 
 [project.scripts]
-dbi = "db_inspector.cli:main"
+dbi = "udb_inspector.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/db_inspector"]
+packages = ["src/udb_inspector"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

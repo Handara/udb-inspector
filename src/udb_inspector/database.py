@@ -338,5 +338,5 @@ def _product(dialect: Dialect, banner: str | None) -> str:
 
 def _missing_driver_message(backend: str, exc: Exception) -> str:
     extra = DRIVER_EXTRAS.get(backend)
-    hint = f" Install it with: pip install 'db-inspector[{extra}]'" if extra else ""
+    hint = f" Install it with: pip install 'udb-inspector[{extra}]'" if extra else ""
     return f"The {backend} driver isn't installed ({exc}).{hint}"

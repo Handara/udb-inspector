@@ -2,10 +2,10 @@ import sqlite3
 
 import pytest
 
-from db_inspector import database
-from db_inspector.cli import main
-from db_inspector.database import ConnectError, Database, Key, Relation
-from db_inspector.detect import detect
+from udb_inspector import database
+from udb_inspector.cli import main
+from udb_inspector.database import ConnectError, Database, Key, Relation
+from udb_inspector.detect import detect
 
 
 def test_server_info_for_sqlite(sample_db):
@@ -38,7 +38,7 @@ def test_missing_driver_names_the_extra(monkeypatch):
         raise ModuleNotFoundError("No module named 'psycopg'")
 
     monkeypatch.setattr(database, "create_engine", fail)
-    with pytest.raises(ConnectError, match=r"pip install 'db-inspector\[postgres\]'"):
+    with pytest.raises(ConnectError, match=r"pip install 'udb-inspector\[postgres\]'"):
         Database(detect("postgres://localhost/app"))
 
 

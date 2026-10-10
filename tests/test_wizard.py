@@ -2,9 +2,9 @@ import stat
 
 import pytest
 
-from db_inspector.connections import global_dir, resolve
-from db_inspector.database import ConnectError
-from db_inspector.wizard import Prompter, guess_connections, run_init
+from udb_inspector.connections import global_dir, resolve
+from udb_inspector.database import ConnectError
+from udb_inspector.wizard import Prompter, guess_connections, run_init
 
 
 class Script:

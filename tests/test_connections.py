@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from db_inspector.connections import ConfigError, global_dir, resolve
-from db_inspector.detect import DetectionError
+from udb_inspector.connections import ConfigError, global_dir, resolve
+from udb_inspector.detect import DetectionError
 
 
 def write(path, text):
@@ -173,7 +173,7 @@ def test_project_env_file_needs_no_special_mode(project):
 
 
 def test_info_shows_where_the_connection_came_from(tmp_path, sample_db, capsys):
-    from db_inspector.cli import main
+    from udb_inspector.cli import main
 
     write_global(f'[connections.staging]\nurl = "sqlite:///{sample_db}"\n')
     assert main(["--info"]) == 0

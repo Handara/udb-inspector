@@ -3,9 +3,9 @@ import io
 
 from rich.console import Console
 
-from db_inspector.database import Database
-from db_inspector.detect import detect
-from db_inspector.tui.app import InspectorApp
+from udb_inspector.database import Database
+from udb_inspector.detect import detect
+from udb_inspector.tui.app import InspectorApp
 
 
 def make_app(sample_db):

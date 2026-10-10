@@ -13,7 +13,7 @@
 
 Values can refer to ${VAR} or ${VAR:-default}. Variables come from the
 environment first, then the env file. The global config lives in
-~/.config/db-inspector/ with its own .env, which must be private (chmod 600).
+~/.config/udb-inspector/ with its own .env, which must be private (chmod 600).
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class ConfigError(DetectionError):
 
 def global_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    return Path(base) / "db-inspector"
+    return Path(base) / "udb-inspector"
 
 
 def find_project_config(start: Path) -> Path | None:
