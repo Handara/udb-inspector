@@ -4,7 +4,7 @@ import pytest
 
 from db_inspector import database
 from db_inspector.cli import main
-from db_inspector.database import ConnectError, Database, Relation
+from db_inspector.database import ConnectError, Database, Key, Relation
 from db_inspector.detect import resolve
 
 
@@ -66,3 +66,42 @@ def test_cli_info(sample_db, capsys):
 def test_cli_error_goes_to_stderr(tmp_path, capsys):
     assert main([str(tmp_path / "nope.db")]) == 1
     assert "no such file" in capsys.readouterr().err
+
+
+def test_describe_table(sample_db):
+    db = Database(resolve(str(sample_db)))
+    details = db.describe(Relation("main", "orders", "table"))
+    columns = {column.name: column for column in details.columns}
+    assert list(columns) == ["id", "user_id", "status"]
+    assert columns["id"].primary_key and not columns["id"].nullable
+    assert columns["user_id"].references == "users.id"
+    assert not columns["user_id"].nullable
+    assert columns["status"].type == "VARCHAR(20)"
+    assert columns["status"].default == "'new'"
+    assert Key("primary key", None, "id") in details.keys
+    assert Key("index", "orders_user_id", "user_id") in details.keys
+    assert [(fk.columns, fk.ref_table, fk.ref_columns) for fk in details.foreign_keys] == [
+        (("user_id",), "users", ("id",))
+    ]
+
+
+def test_describe_unique_and_check(sample_db):
+    db = Database(resolve(str(sample_db)))
+    keys = db.describe(Relation("main", "users", "table")).keys
+    assert Key("unique", None, "email") in keys
+    assert Key("check", None, "age > 0") in keys
+
+
+def test_describe_view(sample_db):
+    db = Database(resolve(str(sample_db)))
+    details = db.describe(Relation("main", "recent_orders", "view"))
+    assert [column.name for column in details.columns] == ["id", "user_id", "status"]
+    assert "SELECT * FROM orders" in details.view_definition
+    assert details.keys == [] and details.foreign_keys == []
+
+
+def test_referenced_by(sample_db):
+    db = Database(resolve(str(sample_db)))
+    incoming = db.referenced_by(Relation("main", "users", "table"))
+    assert [(fk.table, fk.columns) for fk in incoming] == [("orders", ("user_id",))]
+    assert db.referenced_by(Relation("main", "orders", "table")) == []

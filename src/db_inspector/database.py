@@ -1,15 +1,23 @@
-"""Connect to a detected target and ask the server what it is."""
+"""Connect to a detected target, ask the server what it is, and read its schema."""
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Connection, Dialect
-from sqlalchemy.exc import DBAPIError, NoSuchModuleError
+from sqlalchemy.exc import DBAPIError, NoSuchModuleError, SAWarning
+from sqlalchemy.types import TypeEngine
 
 from .detect import Target
+
+# Reflection warns about things it can't represent (expression indexes,
+# extension types). We report what we can; printed warnings would garble the TUI.
+warnings.filterwarnings(
+    "ignore", message="(Skipped unsupported reflection|Did not recognize type)", category=SAWarning
+)
 
 
 class ConnectError(Exception):
@@ -31,6 +39,45 @@ class Relation:
     schema: str
     name: str
     kind: str  # "table" or "view"
+
+
+@dataclass(frozen=True)
+class Column:
+    name: str
+    type: str
+    nullable: bool
+    default: str | None
+    primary_key: bool
+    references: str | None  # "users.id" when the column is part of a foreign key
+    comment: str | None
+
+
+@dataclass(frozen=True)
+class ForeignKey:
+    name: str | None
+    schema: str
+    table: str
+    columns: tuple[str, ...]
+    ref_schema: str
+    ref_table: str
+    ref_columns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Key:
+    kind: str  # "primary key", "unique", "index", "unique index" or "check"
+    name: str | None
+    definition: str  # column list, or the expression of a check
+
+
+@dataclass(frozen=True)
+class TableDetails:
+    relation: Relation
+    columns: list[Column]
+    keys: list[Key]
+    foreign_keys: list[ForeignKey]
+    comment: str | None
+    view_definition: str | None
 
 
 DRIVER_EXTRAS = {
@@ -81,9 +128,14 @@ class Database:
             self.engine = create_engine(url)
         except (ModuleNotFoundError, NoSuchModuleError) as exc:
             raise ConnectError(_missing_driver_message(url.get_backend_name(), exc)) from None
+        # schema -> {(ref_schema, ref_table): foreign keys pointing at it}
+        self._incoming_fks: dict[str, dict[tuple[str, str], list[ForeignKey]]] = {}
 
     def close(self) -> None:
         self.engine.dispose()
+
+    def clear_cache(self) -> None:
+        self._incoming_fks.clear()
 
     def server_info(self) -> ServerInfo:
         try:
@@ -131,6 +183,114 @@ class Database:
         return [Relation(schema, name, "table") for name in tables] + [
             Relation(schema, name, "view") for name in views
         ]
+
+    def describe(self, rel: Relation) -> TableDetails:
+        insp = inspect(self.engine)
+        name, schema = rel.name, rel.schema
+        dialect = self.engine.dialect
+        comment = (_optional(insp.get_table_comment, name, schema=schema) or {}).get("text")
+        raw_columns = insp.get_columns(name, schema=schema)
+
+        if rel.kind == "view":
+            columns = [_column(raw, dialect, primary_key=False, references=None) for raw in raw_columns]
+            definition = _optional(insp.get_view_definition, name, schema=schema)
+            return TableDetails(rel, columns, [], [], comment, definition)
+
+        pk = insp.get_pk_constraint(name, schema=schema)
+        pk_columns = pk.get("constrained_columns") or []
+        default_schema = insp.default_schema_name or schema
+        foreign_keys = [
+            _foreign_key(schema, name, raw, default_schema) for raw in insp.get_foreign_keys(name, schema=schema)
+        ]
+        references = {}
+        for fk in foreign_keys:
+            target = qualified(fk.ref_schema, fk.ref_table, schema)
+            for column, ref_column in zip(fk.columns, fk.ref_columns):
+                references[column] = f"{target}.{ref_column}"
+        columns = [
+            _column(raw, dialect, primary_key=raw["name"] in pk_columns, references=references.get(raw["name"]))
+            for raw in raw_columns
+        ]
+
+        keys = []
+        if pk_columns:
+            keys.append(Key("primary key", pk.get("name"), ", ".join(pk_columns)))
+        for uc in _optional(insp.get_unique_constraints, name, schema=schema) or []:
+            keys.append(Key("unique", uc.get("name"), ", ".join(uc["column_names"])))
+        for ix in insp.get_indexes(name, schema=schema):
+            if ix.get("duplicates_constraint"):  # backs a unique constraint listed above
+                continue
+            elements = ix.get("expressions") or ix["column_names"]
+            definition = ", ".join(element or "(expression)" for element in elements)
+            keys.append(Key("unique index" if ix["unique"] else "index", ix.get("name"), definition))
+        for check in _optional(insp.get_check_constraints, name, schema=schema) or []:
+            keys.append(Key("check", check.get("name"), check["sqltext"]))
+
+        return TableDetails(rel, columns, keys, foreign_keys, comment, None)
+
+    def referenced_by(self, rel: Relation) -> list[ForeignKey]:
+        """Foreign keys in the same schema that point at `rel`.
+
+        Built once per schema: one query on PostgreSQL and Oracle, one per
+        table elsewhere, so it is cached until clear_cache().
+        """
+        index = self._incoming_fks.get(rel.schema)
+        if index is None:
+            insp = inspect(self.engine)
+            default_schema = insp.default_schema_name or rel.schema
+            index = {}
+            for (schema, table), raws in insp.get_multi_foreign_keys(schema=rel.schema).items():
+                for raw in raws:
+                    fk = _foreign_key(schema or rel.schema, table, raw, default_schema)
+                    index.setdefault((fk.ref_schema, fk.ref_table), []).append(fk)
+            self._incoming_fks[rel.schema] = index
+        return index.get((rel.schema, rel.name), [])
+
+
+def _optional(method, *args, **kwargs):
+    """Call a reflection method that some dialects don't implement."""
+    try:
+        return method(*args, **kwargs)
+    except NotImplementedError:
+        return None
+
+
+def _column(raw: dict, dialect: Dialect, *, primary_key: bool, references: str | None) -> Column:
+    default = raw.get("default")
+    return Column(
+        name=raw["name"],
+        type=_type_name(raw["type"], dialect),
+        # SQLite reports INTEGER PRIMARY KEY as nullable; no primary key column is.
+        nullable=bool(raw["nullable"]) and not primary_key,
+        default=None if default is None else str(default),
+        primary_key=primary_key,
+        references=references,
+        comment=raw.get("comment"),
+    )
+
+
+def _type_name(type_: TypeEngine, dialect: Dialect) -> str:
+    try:
+        return type_.compile(dialect=dialect)
+    except Exception:  # NullType for types SQLAlchemy doesn't recognize
+        return "unknown"
+
+
+def _foreign_key(schema: str, table: str, raw: dict, default_schema: str) -> ForeignKey:
+    return ForeignKey(
+        name=raw.get("name"),
+        schema=schema,
+        table=table,
+        columns=tuple(raw["constrained_columns"]),
+        # Dialects leave referred_schema empty for tables on the default search path.
+        ref_schema=raw.get("referred_schema") or default_schema,
+        ref_table=raw["referred_table"],
+        ref_columns=tuple(raw["referred_columns"]),
+    )
+
+
+def qualified(schema: str, table: str, home_schema: str) -> str:
+    return table if schema == home_schema else f"{schema}.{table}"
 
 
 def dialect_name(dialect: Dialect) -> str:

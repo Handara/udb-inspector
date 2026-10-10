@@ -26,7 +26,19 @@ Try it with the demo database:
 python scripts/make_demo_db.py demo.sqlite3 && dbi demo.sqlite3
 ```
 
-Keys: `r` reloads the schema, `q` quits, `ctrl+p` opens the command palette.
+| Key | Action |
+| --- | --- |
+| `↑` `↓`, `enter` | Move through the sidebar; `enter` opens a table or expands a schema |
+| `/` | Filter tables by name (`enter` jumps to the first match, `esc` clears) |
+| `i` | Show the connection details again |
+| `r` | Reload the schema |
+| `q` | Quit |
+| `ctrl+p` | Command palette |
+
+Opening a table shows its columns (type, nullability, default, primary key,
+foreign key target), keys and indexes, the foreign keys it holds, and the
+tables whose foreign keys point at it. Opening a view shows its columns and
+its SQL definition.
 
 ## How the database type is detected
 

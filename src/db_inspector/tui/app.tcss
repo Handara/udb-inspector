@@ -1,14 +1,17 @@
 #sidebar {
     width: 36;
     max-width: 45%;
-    padding: 0 1;
     border-right: vkey $foreground 20%;
+}
+
+#filter {
+    margin: 0 1;
+}
+
+#tree {
+    padding: 0 1;
 }
 
 #main {
     padding: 1 2;
-}
-
-#summary {
-    margin-top: 1;
 }
