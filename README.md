@@ -1,7 +1,10 @@
 # udb-inspector
 
-A unified terminal database inspector in the spirit of Salesforce Inspector: point it at
-a database, it works out what it is, and you browse it from a sidebar.
+A unified database inspector for the terminal: point it at PostgreSQL, MySQL,
+MariaDB, SQLite, SQL Server, Oracle or DuckDB, and it works out what it is. Browse
+the schema from a sidebar, write queries with suggestions and explanations for
+that database, follow records through their foreign keys, and export to CSV or
+Excel.
 
 ## Install
 
@@ -107,8 +110,8 @@ supports one). After searching or sorting you can export just the rows shown,
 in that order. Excel stops at its 1,048,575-row limit and says how many rows
 were left out.
 
-As you type, the bar under the editor suggests what fits at the cursor, the
-way Salesforce Inspector does: statement keywords at the start, tables after
+As you type, the bar under the editor suggests what fits at the cursor:
+statement keywords at the start, tables after
 `FROM` and `JOIN`, the columns (with their types) of the tables in the
 statement, `alias.` for one table's columns, then functions and keywords for
 the connected database, such as `LIMIT` for PostgreSQL and `TOP` or
@@ -129,8 +132,8 @@ about syntax errors.
 
 ### Records
 
-`o` on a row opens it as a record, like Salesforce Inspector's "Show all
-data": every field of the row with its type, fetched fresh by primary key.
+`o` on a row opens it as a record: every field of the row with its type,
+fetched fresh by primary key.
 
 - Enter on a foreign key field (shown as `→ users`) opens the record it points
   to; `esc` goes back, one record at a time.
