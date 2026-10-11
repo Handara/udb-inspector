@@ -83,6 +83,15 @@ selected text. Results show up to 10,000 rows in a grid:
 | `/` | Search the results (all columns, case-insensitive) |
 | click a header | Sort by that column; again to reverse. NULLs stay last |
 | `enter` | Show the cell in full, with JSON pretty-printed; `c` copies it |
+| `ctrl+s`, `x` | Export the results |
+
+Exports go to CSV, Excel (.xlsx), JSON, or the clipboard as tab-separated
+text that pastes into a spreadsheet. By default an export runs the query again
+and streams every row to the file, so it isn't limited to the 10,000 rows on
+screen (a server-side cursor keeps big results out of memory where the driver
+supports one). After searching or sorting you can export just the rows shown,
+in that order. Excel stops at its 1,048,575-row limit and says how many rows
+were left out.
 
 As you type, the bar under the editor suggests what fits at the cursor, the
 way Salesforce Inspector does: statement keywords at the start, tables after

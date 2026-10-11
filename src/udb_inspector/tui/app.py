@@ -133,7 +133,7 @@ class InspectorApp(App):
             return
         self.query_panel.set_sql(f"SELECT * FROM {self.db.quoted_name(rel)}")
         self._show_tab("query-tab")
-        self.query_panel.action_run()
+        self.query_panel.action_run(focus_results=True)  # the results are what you came for
 
     def _root_label(self) -> Text:
         if self.db is None or self.info is None:

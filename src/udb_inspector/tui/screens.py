@@ -203,13 +203,13 @@ class ConnectionForm(ModalScreen[Saved | None]):
         ]
         with VerticalScroll(classes="dialog form"):
             yield Label("Add a connection", classes="title")
-            yield _row("Name", Input(id="name", compact=True))
-            yield _row("Save in", Select(scopes, value=self.scope, allow_blank=False, id="scope", compact=True))
-            yield _row("From .env", Select([], prompt="pick to fill in the fields", id="guess", compact=True), id="row-guess")
-            yield _row("Type", Select(TYPE_OPTIONS, value="postgres", allow_blank=False, id="type", compact=True))
-            yield _row("URL", Input(id="url", compact=True), id="row-url")
+            yield form_row("Name", Input(id="name", compact=True))
+            yield form_row("Save in", Select(scopes, value=self.scope, allow_blank=False, id="scope", compact=True))
+            yield form_row("From .env", Select([], prompt="pick to fill in the fields", id="guess", compact=True), id="row-guess")
+            yield form_row("Type", Select(TYPE_OPTIONS, value="postgres", allow_blank=False, id="type", compact=True))
+            yield form_row("URL", Input(id="url", compact=True), id="row-url")
             for key in SERVER_FIELDS:
-                yield _row(key.capitalize(), Input(id=key, compact=True), id=f"row-{key}")
+                yield form_row(key.capitalize(), Input(id=key, compact=True), id=f"row-{key}")
             yield Label("Type values in, or write ${VAR} to read them from the env file.", classes="hint", markup=False)
             yield Label(key_hints(("ctrl+t", "test"), ("ctrl+s", "save"), ("esc", "cancel")), classes="hint")
             yield Static(id="status", markup=False)
@@ -350,7 +350,7 @@ class ConnectionForm(ModalScreen[Saved | None]):
         self.query_one("#status", Static).update(Text(message, style=style))
 
 
-def _row(label: str, widget, id: str | None = None) -> Horizontal:
+def form_row(label: str, widget, id: str | None = None) -> Horizontal:
     return Horizontal(Label(label, classes="field-label"), widget, classes="row", id=id)
 
 

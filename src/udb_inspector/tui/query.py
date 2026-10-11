@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime
 import json
+from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 from rich.console import Group
 from rich.text import Text
@@ -14,12 +16,14 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Input, Label, Select, Static, TextArea
+from textual.widgets import Button, DataTable, Input, Label, Select, Static, TextArea
 
-from ..database import QueryError, QueryResult, Relation
-from ..hints import PRODUCTS, Context, Suggestion, TableRef, cheat_sheet, context_at, notes, suggest
+from .. import export
+from ..connections import tilde
+from ..database import MAX_ROWS, QueryError, QueryResult, Relation
+from ..hints import PRODUCTS, Context, Suggestion, TableRef, cheat_sheet, context_at, notes, suggest, tables_in
 from ..sql import ReadOnlyError, sqlglot_dialect, statement_at, syntax_problem
-from .screens import key_hints
+from .screens import ConfirmScreen, form_row, key_hints
 
 PAGE_SIZES = [("25 rows", "25"), ("50 rows", "50"), ("100 rows", "100"), ("250 rows", "250"), ("1000 rows", "1000"), ("All rows", "all")]
 CELL_WIDTH = 60  # longer values are cut in the grid; enter shows them in full
@@ -78,6 +82,7 @@ class QueryPanel(Vertical):
     BINDINGS = [
         Binding("ctrl+r,f5,ctrl+enter", "run", "Run"),
         Binding("f1", "cheat_sheet", "Cheat sheet"),
+        Binding("ctrl+s,x", "export", "Export"),
         Binding("left_square_bracket", "page(-1)", "Previous page", show=False),
         Binding("right_square_bracket", "page(1)", "Next page", show=False),
         Binding("slash", "focus_search", "Search results", show=False),
@@ -92,6 +97,7 @@ class QueryPanel(Vertical):
         self.sort: tuple[int, bool] | None = None  # (column, descending)
         self._haystack: list[str] | None = None
         self._columns: dict[Relation, list[tuple[str, str]]] = {}
+        self._focus_results = False
         self._loading: set[Relation] = set()
         self._notes: list[str] = []
         self._syntax: str | None = None
@@ -255,7 +261,7 @@ class QueryPanel(Vertical):
 
     # Running
 
-    def action_run(self) -> None:
+    def action_run(self, focus_results: bool = False) -> None:
         db = self.app.db
         if db is None:
             return
@@ -269,12 +275,13 @@ class QueryPanel(Vertical):
             return
         self._set_status(Text("Running…", style="dim"))
         self.grid.loading = True
+        self._focus_results = focus_results  # a loading widget can't take focus yet
         self._run(sql)
 
     @work(thread=True, exclusive=True, group="query")
     def _run(self, sql: str) -> None:
         try:
-            result = self.app.db.run_query(sql)
+            result = self.app.db.run_query(sql, max_rows=MAX_ROWS)
         except (ReadOnlyError, QueryError) as exc:
             self.app.call_from_thread(self._failed, str(exc))
             return
@@ -291,6 +298,63 @@ class QueryPanel(Vertical):
         self.result, self.sort, self._haystack = result, None, None
         self.grid.loading = False
         self._apply_view()
+        if self._focus_results:
+            self.grid.focus()
+        self.refresh_bindings()
+
+    # Export
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "export":
+            return self.result is not None and bool(self.result.columns)
+        return True
+
+    def action_export(self) -> None:
+        result = self.result
+        refs = tables_in(result.sql, sqlglot_dialect(self.app.info.dialect))
+        reordered = self.sort is not None or self.query_one("#search", Input).value.strip()
+        self.app.push_screen(
+            ExportScreen(
+                directory=self.app.cwd,
+                base=refs[0].name if refs else "query",
+                shown=len(self.view),
+                choose_rows=bool(result.truncated or reordered),
+            ),
+            self._start_export,
+        )
+
+    def _start_export(self, request: ExportRequest | None) -> None:
+        if request is None:
+            return
+        rows = [self.result.rows[index] for index in self.view]
+        if request.fmt == "clipboard":
+            self.app.copy_to_clipboard(export.tab_separated(self.result.columns, rows))
+            self._set_status(Text(f"Copied {len(rows):,} rows to the clipboard.", style="green"))
+            return
+        self._set_status(Text("Exporting…", style="dim"))
+        self._export(request, rows if request.scope == "view" else None)
+
+    @work(thread=True, exclusive=True, group="export")
+    def _export(self, request: ExportRequest, rows: list[tuple] | None) -> None:
+        def progress(count: int) -> None:
+            self.app.call_from_thread(self._set_status, Text(f"Exporting… {count:,} rows", style="dim"))
+
+        try:
+            if rows is not None:  # the rows on screen, after search and sort
+                batches = (rows[start : start + 1000] for start in range(0, len(rows), 1000))
+                report = export.write(request.fmt, request.path, self.result.columns, batches, progress)
+            else:  # everything: run the query again and stream it
+                with self.app.db.stream_query(self.result.sql) as (columns, batches):
+                    report = export.write(request.fmt, request.path, columns, batches, progress)
+        except (QueryError, ReadOnlyError, OSError) as exc:
+            self.app.call_from_thread(self._set_status, Text(f"Export failed: {exc}", style="red"))
+            return
+        self.app.call_from_thread(self._exported, request, report)
+
+    def _exported(self, request: ExportRequest, report: export.ExportReport) -> None:
+        message = f"Exported {report.rows:,} rows to {tilde(request.path)}"
+        self._set_status(Text(message + (f". {report.note}" if report.note else ""), style="yellow" if report.note else "green"))
+        self.notify(message, title="Export finished", timeout=6)
 
     # Search, sort and pages
 
@@ -394,6 +458,80 @@ class QueryPanel(Vertical):
 
     def _set_status(self, text: Text) -> None:
         self.query_one("#status", Static).update(text)
+
+
+@dataclass(frozen=True)
+class ExportRequest:
+    fmt: str  # a key of export.FORMATS
+    scope: str  # "all": run the query again; "view": the rows on screen
+    path: Path | None
+
+
+class ExportScreen(ModalScreen[ExportRequest | None]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("ctrl+s", "export", "Export")]
+    AUTO_FOCUS = "#format"
+
+    def __init__(self, directory: Path, base: str, shown: int, choose_rows: bool):
+        super().__init__()
+        self.directory = directory
+        self.stem = f"{base}-{datetime.datetime.now():%Y%m%d-%H%M%S}"
+        self.shown = shown
+        self.choose_rows = choose_rows
+        self.suggested = self.stem + ".csv"
+
+    def compose(self) -> ComposeResult:
+        scopes = [("All rows (runs the query again)", "all"), (f"The {self.shown:,} rows shown, after search and sort", "view")]
+        with Vertical(classes="dialog form"):
+            yield Label("Export results", classes="title")
+            yield form_row("Format", Select([(label, key) for key, label in export.FORMATS.items()], value="csv", allow_blank=False, id="format", compact=True))
+            yield form_row("Rows", Select(scopes, value="all", allow_blank=False, id="scope", compact=True), id="row-scope")
+            yield form_row("File", Input(self.suggested, id="file", compact=True), id="row-file")
+            yield Label(f"Relative names are saved in {tilde(self.directory)}.", classes="hint", markup=False)
+            yield Static(id="export-error", classes="error", markup=False)
+            yield Label(key_hints(("ctrl+s", "export"), ("esc", "cancel")), classes="hint")
+            with Horizontal(classes="buttons"):
+                yield Button("Export", id="export", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#row-scope").display = self.choose_rows
+
+    @on(Select.Changed, "#format")
+    def _format_changed(self, event: Select.Changed) -> None:
+        clipboard = event.value == "clipboard"
+        self.query_one("#row-file").display = not clipboard
+        self.query_one("#row-scope").display = self.choose_rows and not clipboard
+        file = self.query_one("#file", Input)
+        if not clipboard and file.value == self.suggested:  # only rename what we suggested
+            self.suggested = f"{self.stem}.{event.value}"
+            file.value = self.suggested
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.action_export() if event.button.id == "export" else self.action_cancel()
+
+    def action_export(self) -> None:
+        fmt = self.query_one("#format", Select).value
+        scope = self.query_one("#scope", Select).value if self.choose_rows else "view"
+        if fmt == "clipboard":
+            self.dismiss(ExportRequest(fmt, "view", None))
+            return
+        name = self.query_one("#file", Input).value.strip()
+        if not name:
+            self.query_one("#export-error", Static).update("Give the file a name.")
+            return
+        path = Path(name).expanduser()
+        path = path if path.is_absolute() else self.directory / path
+        if not path.parent.is_dir():
+            self.query_one("#export-error", Static).update(f"{tilde(path.parent)} doesn't exist.")
+            return
+        request = ExportRequest(fmt, scope, path)
+        if path.exists():
+            self.app.push_screen(ConfirmScreen(f"{tilde(path)} exists. Replace it?"), lambda yes: yes and self.dismiss(request))
+        else:
+            self.dismiss(request)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class CheatSheetScreen(ModalScreen[None]):

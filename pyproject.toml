@@ -9,13 +9,14 @@ description = "Terminal database inspector: browse schemas, run queries, export 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "openpyxl>=3.1",
     "python-dotenv>=1.0",
-    "sqlglot>=25",
     "sqlalchemy>=2.0",
+    "sqlglot>=25",
     "textual>=1.0",
-    "tree-sitter>=0.23",
-    "tree-sitter-sql>=0.3",
     "tomlkit>=0.12",
+    "tree-sitter-sql>=0.3",
+    "tree-sitter>=0.23",
 ]
 
 [project.optional-dependencies]

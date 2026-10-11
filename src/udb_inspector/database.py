@@ -308,6 +308,32 @@ class Database:
         )
 
     @contextmanager
+    def stream_query(self, sql: str, batch_size: int = 1000) -> Iterator[tuple[list[str], Iterator[list[tuple]]]]:
+        """Run a read-only query for export: (columns, batches of rows), all of them.
+
+        stream_results asks for a server-side cursor where the driver has one,
+        so a big result isn't held in memory.
+        """
+        check_read_only(sql, dialect_name(self.engine.dialect))
+        with self._read_only() as conn:
+            try:
+                result = conn.execution_options(no_parameters=True, stream_results=True).exec_driver_sql(sql)
+            except DBAPIError as exc:
+                raise QueryError(str(exc.orig).strip()) from None
+
+            def batches() -> Iterator[list[tuple]]:
+                while True:
+                    try:
+                        rows = result.fetchmany(batch_size)
+                    except DBAPIError as exc:
+                        raise QueryError(str(exc.orig).strip()) from None
+                    if not rows:
+                        return
+                    yield [tuple(row) for row in rows]
+
+            yield (list(result.keys()), batches()) if result.returns_rows else ([], iter(()))
+
+    @contextmanager
     def _read_only(self) -> Iterator[Connection]:
         """A connection in a read-only transaction that is always rolled back."""
         with self.engine.connect() as conn:
