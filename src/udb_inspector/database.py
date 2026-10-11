@@ -462,12 +462,21 @@ class Database:
         params = {f"p{index}": value for index, value in enumerate(where.values())}
         return text(f"{select} WHERE {conditions}").bindparams(**params)
 
+    def _as_stored(self, columns: list[str], sort: tuple[str, bool] | None) -> tuple[list[str], tuple[str, bool] | None]:
+        """Column names spelled as the database stores them, for the quoted names in
+        paging SQL. SQLAlchemy reports Oracle's TOTAL as total, and "total" is another column."""
+        dialect = self.engine.dialect
+        if not dialect.requires_name_normalize:
+            return list(columns), sort
+        return [dialect.denormalize_name(name) for name in columns], sort and (dialect.denormalize_name(sort[0]), sort[1])
+
     def fetch_page(
         self, sql: str, *, offset: int, limit: int, sort: tuple[str, bool] | None = None, search: str = "", columns: list[str] = ()
     ) -> Page | None:
         """One page of a query, sorted and searched by the database. None when the
         query can't be paged (it isn't a single SELECT sqlglot can rewrite)."""
         dialect = dialect_name(self.engine.dialect)
+        columns, sort = self._as_stored(columns, sort)
         paged = paged_query(
             sql, sqlglot_dialect(dialect), columns=columns, sort=sort, search=search, offset=offset, limit=limit + 1
         )
@@ -486,6 +495,7 @@ class Database:
     def count_matching(self, sql: str, *, search: str = "", columns: list[str] = ()) -> int | None:
         """How many rows the query returns (with the search applied), or None if it can't be counted."""
         dialect = dialect_name(self.engine.dialect)
+        columns, _ = self._as_stored(columns, None)
         counting = count_query(sql, sqlglot_dialect(dialect), columns=columns, search=search)
         if counting is None:
             return None
@@ -499,6 +509,7 @@ class Database:
     def filtered_sql(self, sql: str, *, sort: tuple[str, bool] | None, search: str, columns: list[str]) -> str:
         """The query with the search and sort applied but no page limit, for exporting what's shown."""
         dialect = sqlglot_dialect(dialect_name(self.engine.dialect))
+        columns, sort = self._as_stored(columns, sort)
         return paged_query(sql, dialect, columns=columns, sort=sort, search=search) or sql
 
     @contextmanager

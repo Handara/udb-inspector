@@ -272,20 +272,20 @@ from udb_inspector.sql import count_query, paged_query  # noqa: E402
         ("postgres", "SELECT * FROM t LIMIT 30", dict(limit=51),
          "SELECT * FROM (SELECT * FROM t LIMIT 30) AS q LIMIT 51"),  # its own LIMIT still applies
         ("postgres", "SELECT * FROM t", dict(columns=["id", "name"], sort=("name", True), search="Bob", limit=51, offset=50),
-         'SELECT * FROM (SELECT * FROM t) AS q WHERE LOWER(CAST("q"."id" AS TEXT)) LIKE \'%bob%\' '
-         'OR LOWER(CAST("q"."name" AS TEXT)) LIKE \'%bob%\' ORDER BY "q"."name" DESC NULLS LAST LIMIT 51 OFFSET 50'),
+         'SELECT * FROM (SELECT * FROM t) AS q WHERE LOWER(CAST(q."id" AS TEXT)) LIKE \'%bob%\' '
+         'OR LOWER(CAST(q."name" AS TEXT)) LIKE \'%bob%\' ORDER BY q."name" DESC NULLS LAST LIMIT 51 OFFSET 50'),
         ("tsql", "SELECT id FROM t ORDER BY id", dict(limit=51, offset=100),
          "SELECT id FROM t ORDER BY id OFFSET 100 ROWS FETCH FIRST 51 ROWS ONLY"),
         ("tsql", "SELECT id FROM t", dict(limit=51, offset=100),
          "SELECT id FROM t ORDER BY (SELECT NULL) OFFSET 100 ROWS FETCH FIRST 51 ROWS ONLY"),
         ("tsql", "WITH a AS (SELECT 1 AS x) SELECT x FROM a ORDER BY x", dict(columns=["x"], search="1", limit=51),
          "WITH a AS (SELECT 1 AS x) SELECT TOP 51 * FROM (SELECT x AS x FROM a) AS q "
-         "WHERE LOWER(CAST([q].[x] AS VARCHAR(MAX))) LIKE '%1%'"),  # WITH outside, no ORDER BY inside
+         "WHERE LOWER(CAST(q.[x] AS VARCHAR(MAX))) LIKE '%1%'"),  # WITH outside, no ORDER BY inside
         ("oracle", "SELECT id FROM t", dict(columns=["id"], search="7", limit=51, offset=51),
-         "SELECT * FROM (SELECT id FROM t) q WHERE LOWER(CAST(\"q\".\"id\" AS VARCHAR2(4000))) LIKE '%7%' "
+         "SELECT * FROM (SELECT id FROM t) q WHERE LOWER(CAST(q.\"id\" AS VARCHAR2(4000))) LIKE '%7%' "
          "OFFSET 51 ROWS FETCH FIRST 51 ROWS ONLY"),
         ("mysql", "SELECT id FROM t", dict(columns=["id"], sort=("id", False), limit=51),
-         "SELECT * FROM (SELECT id FROM t) AS q ORDER BY CASE WHEN `q`.`id` IS NULL THEN 1 ELSE 0 END, `q`.`id` ASC LIMIT 51"),
+         "SELECT * FROM (SELECT id FROM t) AS q ORDER BY CASE WHEN q.`id` IS NULL THEN 1 ELSE 0 END, q.`id` ASC LIMIT 51"),
     ],
 )
 def test_paged_query(dialect, sql, args, expected):
@@ -299,7 +299,7 @@ def test_what_cant_be_paged():
 
 def test_count_query():
     assert count_query("SELECT id FROM t ORDER BY id", "tsql", columns=["id"], search="x") == (
-        "SELECT COUNT(*) FROM (SELECT id AS id FROM t) AS q WHERE LOWER(CAST([q].[id] AS VARCHAR(MAX))) LIKE '%x%'"
+        "SELECT COUNT(*) FROM (SELECT id AS id FROM t) AS q WHERE LOWER(CAST(q.[id] AS VARCHAR(MAX))) LIKE '%x%'"
     )
 
 

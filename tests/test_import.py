@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 from openpyxl import load_workbook
 from sqlalchemy import types as t
+from sqlalchemy.dialects.oracle import NUMBER
 from textual.widgets import Button, Select
 
 from udb_inspector import database
@@ -101,6 +102,15 @@ def test_convert(type_, raw, expected):
 def test_convert_problems(type_, raw, message):
     with pytest.raises(ValueError, match=message):
         convert(raw, column("c", type_))
+
+
+def test_oracle_numbers():
+    """SQLAlchemy calls every Oracle NUMBER an Integer too; the scale says whether decimals fit."""
+    assert convert("1,234.50", column("c", NUMBER(10, 2))) == Decimal("1234.50")
+    assert convert("1.5", column("c", NUMBER())) == Decimal("1.5")
+    assert convert("7", column("c", NUMBER(10))) == 7
+    with pytest.raises(ValueError, match="isn't a whole number"):
+        convert("1.5", column("c", NUMBER(10, 0)))
 
 
 # Planning

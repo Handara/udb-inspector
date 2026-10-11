@@ -173,7 +173,7 @@ def paged_query(
             page = page.where(_contains(columns, search, read))
         if sort:
             column, descending = sort
-            page = page.order_by(exp.Ordered(this=exp.column(column, table="q", quoted=True), desc=descending, nulls_first=False))
+            page = page.order_by(exp.Ordered(this=_result_column(column), desc=descending, nulls_first=False))
     else:
         # Limit the query itself, so its own ORDER BY applies as written.
         page = query.copy()
@@ -225,13 +225,19 @@ def _wrapped(query: exp.Query, read: str | None, *, keep_order: bool) -> exp.Sel
     return outer
 
 
+def _result_column(name: str) -> exp.Column:
+    """q."name": the column quoted, since a result can have any name, but q left bare
+    the way _wrapped() writes it. Oracle reads a bare q as Q, which "q" isn't."""
+    return exp.Column(this=exp.to_identifier(name, quoted=True), table=exp.to_identifier("q"))
+
+
 def _contains(columns: list[str], search: str, read: str | None) -> exp.Expression:
     """Any column, as lowercase text, contains `search`."""
     text_type = exp.DataType.build("VARCHAR(4000)" if read == "oracle" else "TEXT")  # Oracle can't make CLOBs of numbers
     pattern = exp.Literal.string(f"%{search.lower()}%")
     return exp.or_(
         *[
-            exp.Like(this=exp.Lower(this=exp.Cast(this=exp.column(name, table="q", quoted=True), to=text_type)), expression=pattern)
+            exp.Like(this=exp.Lower(this=exp.Cast(this=_result_column(name), to=text_type)), expression=pattern)
             for name in columns
         ]
     )

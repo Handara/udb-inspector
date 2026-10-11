@@ -22,7 +22,7 @@ jobs:
       - run: pytest
 
   databases:
-    # Real PostgreSQL and MySQL servers for tests/test_live_databases.py.
+    # Real servers for tests/test_live_databases.py.
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -41,14 +41,43 @@ jobs:
         ports: ["3306:3306"]
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 -proot" --health-interval 5s --health-timeout 5s --health-retries 30
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: udbi
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 5s --health-timeout 5s --health-retries 30
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Udbi-ci-1
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P Udbi-ci-1 -Q 'SELECT 1'"
+          --health-interval 5s --health-timeout 5s --health-retries 40
+      oracle:
+        image: gvenzl/oracle-free:23-slim
+        env:
+          ORACLE_PASSWORD: oracle
+          APP_USER: udbi
+          APP_USER_PASSWORD: udbi
+        ports: ["1521:1521"]
+        options: >-
+          --health-cmd healthcheck.sh --health-interval 10s --health-timeout 5s --health-retries 30
     env:
       UDBI_TEST_POSTGRES: postgresql+psycopg://postgres:postgres@localhost:5432/udbi
       UDBI_TEST_MYSQL: mysql+pymysql://root:root@127.0.0.1:3306/udbi
+      UDBI_TEST_MARIADB: mariadb+pymysql://root:root@127.0.0.1:3307/udbi
+      UDBI_TEST_SQLSERVER: mssql+pymssql://sa:Udbi-ci-1@127.0.0.1:1433/master
+      UDBI_TEST_ORACLE: oracle+oracledb://udbi:udbi@127.0.0.1:1521/?service_name=FREEPDB1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       # cryptography: MySQL 8's default login method needs it over a plain connection
-      - run: pip install -e ".[dev,postgres,mysql]" cryptography
+      - run: pip install -e ".[dev,postgres,mysql,oracle]" cryptography pymssql
       - run: pytest tests/test_live_databases.py -v

@@ -160,6 +160,16 @@ def plan(pasted: Pasted, columns: list[ColumnInfo], operation: str, key: list[st
     return result
 
 
+def _whole_numbers(kind) -> bool:
+    """Oracle's NUMBER is both Integer and Numeric to SQLAlchemy; its scale says which:
+    NUMBER(10) and NUMBER(10, 0) are whole, NUMBER(10, 2) and a bare NUMBER aren't."""
+    if not isinstance(kind, sqltypes.Integer):
+        return False
+    if isinstance(kind, sqltypes.Numeric):
+        return kind.scale == 0 or (kind.scale is None and kind.precision is not None)
+    return True
+
+
 def convert(raw: str, column: ColumnInfo) -> object:
     """A pasted cell as the Python value for the column's type."""
     kind = column.type
@@ -170,7 +180,7 @@ def convert(raw: str, column: ColumnInfo) -> object:
         if lowered in FALSE:
             return False
         raise ValueError(f"{raw!r} isn't true or false")
-    if isinstance(kind, sqltypes.Integer):
+    if _whole_numbers(kind):
         number = raw.replace(",", "") if THOUSANDS.match(raw) else raw
         try:
             return int(number)

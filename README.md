@@ -76,6 +76,11 @@ udbi dev-postgres
 `dev/compose.yml` starts MySQL, MariaDB, SQL Server and Oracle in Docker; its
 header has the matching seed command. `--rows` changes the size.
 
+`tests/test_live_databases.py` runs against real servers when any of
+`UDBI_TEST_POSTGRES`, `UDBI_TEST_MYSQL`, `UDBI_TEST_MARIADB`,
+`UDBI_TEST_SQLSERVER` and `UDBI_TEST_ORACLE` holds a URL. It replaces the tables
+`users` and `orders` there, so give it a database of its own, not a `dev-` one.
+
 ## Use
 
 ```sh
