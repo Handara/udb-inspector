@@ -56,6 +56,26 @@ pytest
 Pushing a tag like `v0.2.0` makes GitHub build the executables for every
 platform and publish them as a release.
 
+### Databases to try udbi on
+
+`scripts/seed_dev_databases.py` fills any database udbi supports with a small
+shop: `customers` (100k rows), `products` (1k), `orders` (1M), `order_items`
+(1M) and a `customer_totals` view, with foreign keys, NULLs, dates, decimals and
+booleans. It saves each as a global connection named `dev-<name>` with writes
+allowed:
+
+```sh
+dev/postgres.sh start    # a private PostgreSQL on port 5433, no sudo needed
+python scripts/seed_dev_databases.py \
+  sqlite=~/.local/share/udbi-dev/shop.sqlite3 \
+  duckdb=~/.local/share/udbi-dev/shop.duckdb \
+  postgres=postgresql://$USER@localhost:5433/udbi_dev
+udbi dev-postgres
+```
+
+`dev/compose.yml` starts MySQL, MariaDB, SQL Server and Oracle in Docker; its
+header has the matching seed command. `--rows` changes the size.
+
 ## Use
 
 ```sh

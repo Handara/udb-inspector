@@ -1,0 +1,42 @@
+# Databases for trying udbi, listening on localhost only, on ports that won't
+# clash with yours. Needs Docker (on WSL: Docker Desktop with WSL integration).
+#
+#   docker compose -f dev/compose.yml up -d
+#   pip install pymysql pymssql oracledb cryptography   # into udbi's development venv
+#   python scripts/seed_dev_databases.py \
+#     mysql=mysql://root:udbi@127.0.0.1:53306/udbi \
+#     mariadb=mariadb://root:udbi@127.0.0.1:53307/udbi \
+#     sqlserver=mssql+pymssql://sa:Udbi-dev-1@127.0.0.1:51433/master \
+#     "oracle=oracle+oracledb://udbi:udbi@127.0.0.1:51521/?service_name=FREEPDB1"
+#
+# The passwords are for these throwaway containers only.
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: udbi
+      MYSQL_DATABASE: udbi
+    ports: ["127.0.0.1:53306:3306"]
+
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: udbi
+      MARIADB_DATABASE: udbi
+    ports: ["127.0.0.1:53307:3306"]
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: Udbi-dev-1
+    ports: ["127.0.0.1:51433:1433"]
+
+  oracle:
+    image: gvenzl/oracle-free:23-slim
+    environment:
+      ORACLE_PASSWORD: udbi
+      APP_USER: udbi
+      APP_USER_PASSWORD: udbi
+    ports: ["127.0.0.1:51521:1521"]
