@@ -50,6 +50,9 @@ class QueryEditor(TextArea):
         Binding("tab", "open_suggestions", "Suggestions", show=False, priority=True),
         # priority too: TextArea's own escape moves focus on before bindings run.
         Binding("escape", "escape", "Hide suggestions or leave", show=False, priority=True),
+        # ctrl+arrows move between panes, so words are alt+arrows here.
+        Binding("alt+left", "cursor_word_left", "Word left", show=False),
+        Binding("alt+right", "cursor_word_right", "Word right", show=False),
     ]
 
     def __init__(self, *args, **kwargs) -> None:

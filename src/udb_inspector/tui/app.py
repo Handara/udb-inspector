@@ -54,13 +54,20 @@ class InspectorApp(App):
         Binding("q", "quit", "Quit"),
         Binding("c", "connections", "Connections"),
         Binding("a", "add_connection", "Add connection", show=False),  # also in the c chooser
-        Binding("ctrl+t", "focus_tables", "Tables"),
+        Binding("ctrl+t", "focus_tables", "Tables", show=False),  # same as ctrl+left
+        # priority: these beat the word-by-word moves of the editor and text boxes
+        # (the editor moves by word with alt+arrows instead). One footer entry for all four.
+        Binding("ctrl+left", "focus_pane('tables')", "Move", priority=True, key_display="ctrl+arrows"),
+        Binding("ctrl+right", "focus_pane('main')", "Main", priority=True, show=False),
+        Binding("ctrl+up", "focus_pane('editor')", "Editor", priority=True, show=False),
+        Binding("ctrl+down", "focus_pane('results')", "Results", priority=True, show=False),
         Binding("f2", "schema", "Schema"),
         Binding("f3,e", "query", "Query"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
     NEEDS_DATABASE = {
-        "focus_filter", "focus_tree", "focus_tables", "schema", "show_connection", "reload", "clear_filter", "query", "select_rows",
+        "focus_filter", "focus_tree", "focus_tables", "focus_pane", "schema", "show_connection", "reload", "clear_filter", "query",
+        "select_rows",
     }
 
     def __init__(self, target: Target | None = None, error: str | None = None, cwd: Path | None = None):
@@ -150,6 +157,19 @@ class InspectorApp(App):
 
     def action_focus_tables(self) -> None:
         self.tree.focus()
+
+    def action_focus_pane(self, pane: str) -> None:
+        """ctrl+arrows: tables on the left; on the right the open tab, or the editor above the results."""
+        tabs = self.query_one(TabbedContent)
+        if pane == "tables":
+            self.tree.focus()
+        elif pane == "editor" or (pane == "main" and tabs.active == "query-tab" and not self.query_panel.result):
+            self.action_query()
+        elif pane == "results" or pane == "main" and tabs.active == "query-tab":
+            self._show_tab("query-tab")
+            self.query_panel.grid.focus()
+        else:
+            self.query_one("#main").focus()  # the schema details, to scroll them
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         # Clicking a tab focuses the tab bar, which has no keys of its own, so the

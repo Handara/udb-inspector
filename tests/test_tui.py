@@ -368,3 +368,34 @@ def test_esc_walks_out_of_the_editor(sample_db):
         assert app.focused is app.tree
 
     run(app, scenario)
+
+
+def test_ctrl_arrows_move_between_panes(sample_db):
+    from textual.widgets import TabbedContent
+
+    app = InspectorApp(detect(str(sample_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        tabs = app.query_one(TabbedContent)
+        await pilot.press("ctrl+right")  # schema tab: the details, to scroll
+        assert app.focused is app.query_one("#main")
+        await pilot.press("ctrl+up")
+        assert tabs.active == "query-tab" and app.focused is app.query_panel.editor
+        app.query_panel.editor.text = "SELECT id FROM users"
+        await pilot.press("ctrl+r")
+        await settle(pilot)
+        await pilot.press("ctrl+down")
+        assert app.focused is app.query_panel.grid
+        await pilot.press("ctrl+left")
+        assert app.focused is app.tree
+        await pilot.press("ctrl+right")  # query tab with results: back to them
+        assert app.focused is app.query_panel.grid
+
+        await pilot.press("ctrl+up")
+        editor = app.query_panel.editor
+        editor.move_cursor((0, 0))
+        await pilot.press("alt+right")  # words move with alt in the editor
+        assert editor.cursor_location == (0, 6)
+
+    run(app, scenario)
