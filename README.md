@@ -86,6 +86,7 @@ ctrl+enter as a plain enter; there `ctrl+r` or `F5` run it instead. Results show
 | click a header | Sort by that column; again to reverse. NULLs stay last |
 | `enter` | Show the cell in full, with JSON pretty-printed; `c` copies it |
 | `ctrl+s`, `x` | Export the results |
+| `o` | Open the row as a record (see below) |
 
 Exports go to CSV, Excel (.xlsx), JSON, or the clipboard as tab-separated
 text that pastes into a spreadsheet. By default an export runs the query again
@@ -114,6 +115,21 @@ The bar also warns about syntax from other databases (`LIMIT` on SQL Server,
 `||` on MySQL, `"bob"` meaning a column in PostgreSQL, `NOW()` on SQL Server,
 `IFNULL` outside MySQL and SQLite, …) and, after a short pause in typing,
 about syntax errors.
+
+### Records
+
+`o` on a row opens it as a record, like Salesforce Inspector's "Show all
+data": every field of the row with its type, fetched fresh by primary key.
+
+- Enter on a foreign key field (shown as `→ users`) opens the record it points
+  to; `esc` goes back, one record at a time.
+- The Related section lists the tables whose foreign keys point at this record,
+  with how many rows do (`← orders   6 rows`). Enter queries those rows in the
+  Query tab, ready to search, sort or export.
+- Enter on any other field shows its value in full; `c` copies it.
+
+Records open from queries on a single table. If the query left out the primary
+key, the record shows the row as the query returned it.
 
 Queries are read-only. Each statement is checked before it runs, and anything
 that writes (including a `DELETE` inside a `WITH`, `SELECT … INTO` and

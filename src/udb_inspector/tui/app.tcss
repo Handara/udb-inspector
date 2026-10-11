@@ -134,3 +134,13 @@ ModalScreen {
 .dialog .buttons Button {
     margin-right: 1;
 }
+
+.dialog.record {
+    width: 110;
+    height: 85%;
+    max-height: 85%;
+}
+
+#record {
+    height: 1fr;
+}

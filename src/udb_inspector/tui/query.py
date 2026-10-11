@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import datetime
-import json
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 
 from rich.console import Group
@@ -13,7 +11,7 @@ from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Label, OptionList, Select, Static, TextArea
@@ -24,10 +22,11 @@ from ..connections import tilde
 from ..database import MAX_ROWS, QueryError, QueryResult, Relation
 from ..hints import PRODUCTS, Context, Suggestion, TableRef, cheat_sheet, context_at, notes, suggest, tables_in
 from ..sql import ReadOnlyError, sqlglot_dialect, statement_at, syntax_problem
+from .record import RecordScreen
 from .screens import ConfirmScreen, form_row, key_hints
+from .values import CellScreen, cell, plain, sort_key
 
 PAGE_SIZES = [("25 rows", "25"), ("50 rows", "50"), ("100 rows", "100"), ("250 rows", "250"), ("1000 rows", "1000"), ("All rows", "all")]
-CELL_WIDTH = 60  # longer values are cut in the grid; enter shows them in full
 
 
 class QueryEditor(TextArea):
@@ -117,6 +116,7 @@ class QueryPanel(Vertical):
         Binding("ctrl+enter,ctrl+j,ctrl+r,f5", "run", "Run"),
         Binding("f1", "cheat_sheet", "Cheat sheet"),
         Binding("ctrl+s,x", "export", "Export"),
+        Binding("o", "open_record", "Open record"),
         Binding("left_square_bracket", "page(-1)", "Previous page", show=False),
         Binding("right_square_bracket", "page(1)", "Next page", show=False),
         Binding("slash", "focus_search", "Search results", show=False),
@@ -372,7 +372,31 @@ class QueryPanel(Vertical):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "export":
             return self.result is not None and bool(self.result.columns)
+        if action == "open_record":
+            return bool(self.view) and self.grid.has_focus
         return True
+
+    def action_open_record(self) -> None:
+        size = self.page_size or len(self.view)
+        position = self.page * size + self.grid.cursor_row
+        if position >= len(self.view):
+            return
+        row = dict(zip(self.result.columns, self.result.rows[self.view[position]]))
+        refs = tables_in(self.result.sql, sqlglot_dialect(self.app.info.dialect))
+        if len(refs) != 1:
+            reads = "reads several tables" if refs else "doesn't read a table"
+            self._set_status(Text(f"Records open from a query on one table; this one {reads}.", style="yellow"))
+            return
+        rel = self._resolve(refs[0])
+        if rel is None:
+            self._set_status(Text(f"{refs[0].name} isn't a table in the sidebar.", style="yellow"))
+            return
+        self.app.push_screen(RecordScreen(rel, row=row))
+
+    @on(DataTable.CellHighlighted, "#grid")
+    @on(DataTable.CellSelected, "#grid")
+    def _grid_moved(self) -> None:
+        self.refresh_bindings()
 
     def action_export(self) -> None:
         result = self.result
@@ -447,7 +471,7 @@ class QueryPanel(Vertical):
         needle = self.query_one("#search", Input).value.strip().lower()
         if needle:
             if self._haystack is None:
-                self._haystack = ["\x00".join(_plain(value).lower() for value in row) for row in rows]
+                self._haystack = ["\x00".join(plain(value).lower() for value in row) for row in rows]
             self.view = [index for index, text in enumerate(self._haystack) if needle in text]
         else:
             self.view = list(range(len(rows)))
@@ -455,7 +479,7 @@ class QueryPanel(Vertical):
             column, descending = self.sort
             values = [index for index in self.view if rows[index][column] is not None]
             nulls = [index for index in self.view if rows[index][column] is None]
-            values.sort(key=lambda index: _sort_key(rows[index][column]), reverse=descending)
+            values.sort(key=lambda index: sort_key(rows[index][column]), reverse=descending)
             self.view = values + nulls  # NULLs last either way
         self.page = 0
         self._render_columns()
@@ -481,14 +505,14 @@ class QueryPanel(Vertical):
         start = self.page * size
         shown = self.view[start : start + size]
         rows = self.result.rows
-        grid.add_rows([[_cell(value) for value in rows[index]] for index in shown])
+        grid.add_rows([[cell(value) for value in rows[index]] for index in shown])
         self._set_status(self._summary())
         if self.view:
             position = f"Rows {start + 1}–{start + len(shown)} of {len(self.view)}  |  page {self.page + 1} of {pages}"
         else:
             position = "No rows"
         pager = Text(position + "    ", style="dim")
-        pager.append_text(key_hints(("[ ]", "page"), ("/", "search"), ("enter", "full value"), ("click a header", "sort")))
+        pager.append_text(key_hints(("o", "open record"), ("enter", "full value"), ("[ ]", "page"), ("/", "search"), ("click a header", "sort")))
         self.query_one("#pager", Static).update(pager)
 
     def _summary(self) -> Text:
@@ -621,70 +645,3 @@ class CheatSheetScreen(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss()
-
-
-class CellScreen(ModalScreen[None]):
-    """One value in full, with JSON pretty-printed."""
-
-    BINDINGS = [Binding("escape,enter", "close", "Close"), Binding("c", "copy", "Copy")]
-
-    def __init__(self, column: str, value: object):
-        super().__init__()
-        self.column = column
-        self.value = value
-
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="dialog"):
-            yield Label(self.column, classes="title", markup=False)
-            with VerticalScroll(id="cell-value"):
-                yield Static(_full(self.value), markup=False)
-            yield Label(key_hints(("c", "copy"), ("esc", "close")), classes="hint")
-
-    def action_copy(self) -> None:
-        self.app.copy_to_clipboard(_full(self.value))
-        self.notify("Copied to the clipboard.", timeout=2)
-
-    def action_close(self) -> None:
-        self.dismiss()
-
-
-def _plain(value: object) -> str:
-    if value is None:
-        return "NULL"
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return f"<{len(value)} bytes>"
-    if isinstance(value, (datetime.date, datetime.time)):
-        return value.isoformat()
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, default=str, ensure_ascii=False)
-    return str(value)
-
-
-def _cell(value: object) -> Text:
-    if value is None:
-        return Text("NULL", style="dim italic")
-    text = _plain(value).replace("\r\n", "↵").replace("\n", "↵")
-    if len(text) > CELL_WIDTH:
-        text = text[: CELL_WIDTH - 1] + "…"
-    numeric = isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
-    return Text(text, justify="right" if numeric else "left")
-
-
-def _full(value: object) -> str:
-    if isinstance(value, str) and value[:1] in "{[":
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return value
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, indent=2, default=str, ensure_ascii=False)
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return bytes(value).hex(" ")
-    return _plain(value)
-
-
-def _sort_key(value: object) -> tuple:
-    """Numbers by value, everything else as text."""
-    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
-        return (0, float(value), "")
-    return (1, 0, _plain(value).lower())

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Connection, Dialect
 from sqlalchemy.exc import DBAPIError, NoSuchModuleError, SAWarning
 from sqlalchemy.types import TypeEngine
@@ -311,6 +311,34 @@ class Database:
         return QueryResult(
             sql, columns, [tuple(row) for row in rows[:max_rows]], len(rows) > max_rows, time.perf_counter() - started
         )
+
+    def fetch_row(self, rel: Relation, where: dict[str, object]) -> tuple[list[str], tuple] | None:
+        """The first row of `rel` whose columns equal `where`, as (columns, values)."""
+        with self._read_only() as conn:
+            try:
+                result = conn.execute(self._where(f"SELECT * FROM {self.quoted_name(rel)}", where))
+                row = result.fetchone()
+            except DBAPIError as exc:
+                raise QueryError(str(exc.orig).strip()) from None
+            return (list(result.keys()), tuple(row)) if row is not None else None
+
+    def count_rows(self, rel: Relation, where: dict[str, object]) -> int:
+        with self._read_only() as conn:
+            try:
+                return conn.execute(self._where(f"SELECT COUNT(*) FROM {self.quoted_name(rel)}", where)).scalar_one()
+            except DBAPIError as exc:
+                raise QueryError(str(exc.orig).strip()) from None
+
+    def select_sql(self, rel: Relation, where: dict[str, object]) -> str:
+        """SELECT * … WHERE col = value with the values written out, for the query editor."""
+        statement = self._where(f"SELECT * FROM {self.quoted_name(rel)}", where)
+        return str(statement.compile(dialect=self.engine.dialect, compile_kwargs={"literal_binds": True}))
+
+    def _where(self, select: str, where: dict[str, object]):
+        quote = self.engine.dialect.identifier_preparer.quote
+        conditions = " AND ".join(f"{quote(column)} = :p{index}" for index, column in enumerate(where))
+        params = {f"p{index}": value for index, value in enumerate(where.values())}
+        return text(f"{select} WHERE {conditions}").bindparams(**params)
 
     @contextmanager
     def stream_query(self, sql: str, batch_size: int = 1000) -> Iterator[tuple[list[str], Iterator[list[tuple]]]]:

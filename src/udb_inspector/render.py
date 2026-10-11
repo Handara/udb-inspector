@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from rich import box
 from rich.console import Group, RenderableType
 from rich.padding import Padding
 from rich.syntax import Syntax

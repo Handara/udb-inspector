@@ -19,6 +19,7 @@ from ..detect import DetectionError, Target
 from ..render import connection_table, table_details
 from ..settings import load_settings
 from .query import QueryPanel
+from .record import RecordScreen
 from .screens import ConnectionForm, ConnectionsScreen, PasswordScreen, ThemeScreen, key_hints
 
 
@@ -134,6 +135,14 @@ class InspectorApp(App):
     def action_query(self) -> None:
         self._show_tab("query-tab")
         self.query_panel.editor.focus()
+
+    def query_related(self, rel: Relation, where: dict[str, object]) -> None:
+        """Close the record views and query `rel` for the rows matching `where`."""
+        while isinstance(self.screen, RecordScreen):
+            self.pop_screen()
+        self.query_panel.set_sql(self.db.select_sql(rel, where))
+        self._show_tab("query-tab")
+        self.query_panel.action_run(focus_results=True)
 
     def action_schema(self) -> None:
         self._show_tab("schema-tab")
