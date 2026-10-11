@@ -39,6 +39,8 @@ PYINSTALLER_ARGS = [
     "--collect-data", "textual",
     "--collect-submodules", "rich",  # unicode tables are imported by name
     "--collect-submodules", "sqlalchemy.dialects",
+    "--collect-submodules", "sqlglot",  # SQL dialects are imported by name
+    "--collect-all", "tree_sitter_sql",  # the editor's highlighting grammar
     "--copy-metadata", "duckdb_engine",  # registers its dialect through an entry point
     *[arg for package in DRIVER_PACKAGES for arg in ("--collect-all", package)],
     str(ROOT / "scripts" / "udbi_entry.py"),
