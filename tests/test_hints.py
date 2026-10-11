@@ -324,3 +324,34 @@ def test_the_bar_explains_and_warns(sample_db):
         assert "ℹ INNER JOIN: one row for each orders row and orders row" in text
 
     run(app, scenario)
+
+
+def test_every_keyword_and_function_says_what_it_does():
+    from udb_inspector.hints import (
+        DIALECT_FUNCTIONS, DIALECT_KEYWORDS, DIALECT_STATEMENTS, FUNCTIONS, KEYWORDS, STATEMENT_KEYWORDS, describe,
+    )
+
+    for dialect in DIALECT_KEYWORDS:
+        words = KEYWORDS + FUNCTIONS + STATEMENT_KEYWORDS
+        words += DIALECT_KEYWORDS[dialect] + DIALECT_FUNCTIONS.get(dialect, []) + DIALECT_STATEMENTS.get(dialect, [])
+        assert [word for word in words if not describe(word, dialect)] == [], dialect
+    assert "DATEDIFF(day, a, b)" in describe("DATEDIFF", "mssql")
+    assert "DATEDIFF(a, b)" in describe("DATEDIFF", "mysql")
+
+
+def test_the_list_shows_descriptions(sample_db):
+    from udb_inspector.tui.query import SuggestionList
+
+    app = InspectorApp(detect(str(sample_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("e")
+        app.query_panel.editor.insert("SELECT * FROM users CROSS JO")
+        await pilot.pause()
+        await pilot.press("tab")
+        listing = app.query_panel.query_one(SuggestionList)
+        prompts = [str(listing.get_option_at_index(i).prompt) for i in range(listing.option_count)]
+        assert any("CROSS JOIN" in p and "every row paired with every row" in p for p in prompts)
+
+    run(app, scenario)

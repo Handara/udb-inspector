@@ -311,8 +311,8 @@ class QueryPanel(Vertical):
                 if index:
                     line.append("  |  ", style="dim")
                 line.append(item.label, style="bold" if index == 0 else "")
-                if item.detail or item.kind in ("table", "view") and context.kind != "table":
-                    line.append(f" {item.detail or item.kind}", style="dim")
+                if item.kind == "column" and item.detail:  # the list (tab) has the longer descriptions
+                    line.append(f" {item.detail}", style="dim")
             if len(editor.suggestions) > 8:
                 line.append(f"  +{len(editor.suggestions) - 8} more", style="dim")
             lines.append(line)

@@ -79,6 +79,122 @@ DIALECT_FUNCTIONS = {
 }
 
 
+# What each suggestion does, shown next to it in the list. A dict value varies by database.
+DOCS: dict[str, str | dict[str, str]] = {
+    # starting a statement
+    "SELECT": "read rows: SELECT columns FROM table",
+    "WITH": "name a subquery to use further down (a CTE)",
+    "EXPLAIN": "show how the database will run the query",
+    "VALUES": "a literal list of rows",
+    "SHOW": {"postgresql": "show a setting's value", "*": "list tables, columns or settings"},
+    "DESCRIBE": "list a table's columns",
+    "PRAGMA": "read SQLite settings and table information",
+    "SUMMARIZE": "statistics for every column of a table",
+    # clauses
+    "FROM": "the table or tables to read from",
+    "WHERE": "keep only the rows matching a condition",
+    "AND": "both conditions have to hold",
+    "OR": "either condition may hold",
+    "NOT": "the opposite of the condition",
+    "IN": "equal to any value in a list or subquery",
+    "IS NULL": "the value is missing (= NULL never matches)",
+    "IS NOT NULL": "the value is present",
+    "LIKE": "text pattern: % for any run of characters, _ for one",
+    "BETWEEN": "within a range, both ends included",
+    "EXISTS": "true when the subquery returns any row",
+    "JOIN": "same as INNER JOIN",
+    "LEFT JOIN": "all rows on the left, with matches (or NULLs) from the right",
+    "INNER JOIN": "only rows that have a match on both sides",
+    "RIGHT JOIN": "all rows on the right, with matches (or NULLs) from the left",
+    "FULL JOIN": "all rows from both sides, with NULLs where there's no match",
+    "CROSS JOIN": "every row paired with every row of the other table",
+    "ON": "the condition that pairs rows in a join",
+    "AS": "give a column or table another name",
+    "DISTINCT": "drop duplicate rows",
+    "GROUP BY": "one row per group; aggregate the other columns",
+    "HAVING": "filter whole groups, after GROUP BY",
+    "ORDER BY": "sort the result",
+    "ASC": "smallest first (the default)",
+    "DESC": "largest first",
+    "CASE": "if/then: CASE WHEN … THEN … ELSE … END",
+    "WHEN": "a condition inside CASE",
+    "THEN": "the value when the WHEN condition holds",
+    "ELSE": "the value when no WHEN condition holds",
+    "END": "closes CASE",
+    "UNION": "stack two results, dropping duplicate rows",
+    "UNION ALL": "stack two results, keeping every row",
+    "LIMIT": "keep only the first n rows",
+    "OFFSET": {"mssql": "skip rows: ORDER BY … OFFSET n ROWS", "oracle": "skip rows: OFFSET n ROWS", "*": "skip the first n rows"},
+    "ILIKE": "LIKE, ignoring upper and lower case",
+    "DISTINCT ON": "the first row of each group: DISTINCT ON (column)",
+    "NULLS LAST": "sort NULLs after every other value",
+    "FETCH FIRST": "keep the first n rows: FETCH FIRST n ROWS ONLY",
+    "REGEXP": "matches a regular expression",
+    "GLOB": "Unix-style pattern; unlike LIKE it's case-sensitive",
+    "QUALIFY": "filter on window function results",
+    "TOP": "keep the first n rows: SELECT TOP n …",
+    "ROWS": "part of OFFSET n ROWS",
+    "FETCH NEXT": "after OFFSET: FETCH NEXT n ROWS ONLY",
+    "ROWS ONLY": "ends FETCH FIRST / NEXT n ROWS ONLY",
+    "WITH (NOLOCK)": "read without waiting for locks; may see uncommitted rows",
+    "ROWNUM": "the row's number; WHERE ROWNUM <= n keeps the first n",
+    # functions
+    "COUNT": "number of rows; COUNT(column) skips NULLs",
+    "SUM": "total of the values",
+    "AVG": "average of the values",
+    "MIN": "smallest value",
+    "MAX": "largest value",
+    "COALESCE": "the first argument that isn't NULL",
+    "NULLIF": "NULL when both arguments are equal",
+    "CAST": "convert to another type: CAST(x AS type)",
+    "LOWER": "text in lowercase",
+    "UPPER": "text in uppercase",
+    "TRIM": "remove spaces at both ends",
+    "ROUND": "round to n decimals",
+    "ABS": "absolute value",
+    "NOW": "current date and time",
+    "DATE_TRUNC": "cut a date down: DATE_TRUNC('month', d)",
+    "EXTRACT": "one part of a date: EXTRACT(YEAR FROM d)",
+    "AGE": "the interval between two dates",
+    "TO_CHAR": "format a date or number as text",
+    "STRING_AGG": "join a group's values into one text",
+    "ARRAY_AGG": "collect a group's values into an array",
+    "LENGTH": "number of characters",
+    "SUBSTRING": "part of a text: SUBSTRING(text, start, length)",
+    "CONCAT": "join texts together",
+    "CURDATE": "today's date",
+    "DATE_FORMAT": "format a date: DATE_FORMAT(d, '%Y-%m-%d')",
+    "DATEDIFF": {"mssql": "difference in a unit: DATEDIFF(day, a, b)", "*": "days between two dates: DATEDIFF(a, b)"},
+    "GROUP_CONCAT": "join a group's values into one text",
+    "IFNULL": "the second argument when the first is NULL",
+    "DATE": "the date part, or date arithmetic: date(d, '+1 day')",
+    "DATETIME": "date and time as text",
+    "STRFTIME": {"duckdb": "format a date: strftime(d, '%Y-%m-%d')", "*": "format a date: strftime('%Y-%m-%d', d)"},
+    "SUBSTR": "part of a text: SUBSTR(text, start, length)",
+    "JSON_EXTRACT": "a value from JSON: json_extract(doc, '$.key')",
+    "LIST": "collect a group's values into a list",
+    "REGEXP_MATCHES": "whether text matches a regular expression",
+    "GETDATE": "current date and time",
+    "SYSDATETIME": "current date and time, more precise",
+    "DATEADD": "add to a date: DATEADD(day, 1, d)",
+    "FORMAT": "format a value: FORMAT(d, 'yyyy-MM-dd')",
+    "CONVERT": "convert to another type: CONVERT(type, x)",
+    "ISNULL": "the second argument when the first is NULL",
+    "LEN": "number of characters",
+    "SYSDATE": "current date and time",
+    "SYSTIMESTAMP": "current timestamp, with time zone",
+    "NVL": "the second argument when the first is NULL",
+    "TO_DATE": "read text as a date: TO_DATE('2026-01-31', 'YYYY-MM-DD')",
+    "TRUNC": "cut a date or number down: TRUNC(d, 'MM')",
+    "LISTAGG": "join a group's values into one text",
+}
+
+
+def describe(word: str, dialect: str) -> str:
+    doc = DOCS.get(word, "")
+    return doc.get(dialect, doc.get("*", "")) if isinstance(doc, dict) else doc
+
+
 def context_at(text: str, offset: int, dialect: str) -> Context:
     """What could be typed at `offset`."""
     read = sqlglot_dialect(dialect)
@@ -171,7 +287,7 @@ def suggest(
         return []
     if context.kind == "statement":
         words = STATEMENT_KEYWORDS + DIALECT_STATEMENTS.get(dialect, [])
-        return _filter([Suggestion(f"{w} ", w, "keyword") for w in words], context.prefix)
+        return _filter([Suggestion(f"{w} ", w, "keyword", describe(w, dialect)) for w in words], context.prefix)
     if context.kind == "table":
         found = [
             Suggestion(f"{quote(schema)}.{quote(name)}" if schema else quote(name), f"{schema}.{name}" if schema else name, kind)
@@ -190,8 +306,8 @@ def suggest(
             column_hits.append(Suggestion(quote(name), name, "column", detail))
     if context.qualifier:
         return _filter(column_hits, context.prefix)
-    functions = [Suggestion(f"{f}(", f"{f}()", "function") for f in FUNCTIONS + DIALECT_FUNCTIONS.get(dialect, [])]
-    keywords = [Suggestion(f"{k} ", k, "keyword") for k in KEYWORDS + DIALECT_KEYWORDS.get(dialect, [])]
+    functions = [Suggestion(f"{f}(", f"{f}()", "function", describe(f, dialect)) for f in FUNCTIONS + DIALECT_FUNCTIONS.get(dialect, [])]
+    keywords = [Suggestion(f"{k} ", k, "keyword", describe(k, dialect)) for k in KEYWORDS + DIALECT_KEYWORDS.get(dialect, [])]
     ordered = keywords + column_hits + functions if context.after_expression else column_hits + functions + keywords
     return _filter(ordered, context.prefix)
 
