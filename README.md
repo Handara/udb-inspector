@@ -96,23 +96,31 @@ its SQL definition.
 
 The Query tab (`F3` or `e`) has an SQL editor. `ctrl+enter` runs the statement
 under the cursor, or the selected text. Some terminals (VS Code's, for one) send
-ctrl+enter as a plain enter; there `ctrl+r` or `F5` run it instead. Results show up to 10,000 rows in a grid:
+ctrl+enter as a plain enter; there `ctrl+r` or `F5` run it instead.
+
+Results come one page at a time: each page is its own query, with `LIMIT` and
+`OFFSET` (or `TOP` / `OFFSET … FETCH` on SQL Server and Oracle) added to yours,
+so the first page of a huge table is quick and nothing waits for the whole
+result. Sorting and searching happen in the database too, over every row, and
+the total is counted in the background. Statements that can't be paged
+(`SHOW`, `EXPLAIN`, `PRAGMA`, …), or a rewritten query the database rejects,
+are run as typed and show their first 10,000 rows.
 
 | Key | Action |
 | --- | --- |
 | `[` `]` | Previous / next page; the page size is picked next to the search box |
-| `/` | Search the results (all columns, case-insensitive) |
-| click a header | Sort by that column; again to reverse. NULLs stay last |
+| `/` | Search every column of every row, ignoring case (runs once you pause typing, or on enter) |
+| click a header | Sort the whole result by that column; again to reverse. NULLs stay last |
 | `enter` | Show the cell in full, with JSON pretty-printed; `c` copies it |
 | `ctrl+s`, `x` | Export the results |
 | `o` | Open the row as a record (see below) |
 
 Exports go to CSV, Excel (.xlsx), JSON, or the clipboard as tab-separated
 text that pastes into a spreadsheet. By default an export runs the query again
-and streams every row to the file, so it isn't limited to the 10,000 rows on
-screen (a server-side cursor keeps big results out of memory where the driver
-supports one). After searching or sorting you can export just the rows shown,
-in that order. Excel stops at its 1,048,575-row limit and says how many rows
+and streams every row to the file (a server-side cursor keeps big results out
+of memory where the driver supports one). After searching or sorting you can
+export just the matching rows, in that order. The clipboard takes up to 10,000
+rows. Excel stops at its 1,048,575-row limit and says how many rows
 were left out.
 
 As you type, the bar under the editor suggests what fits at the cursor:

@@ -20,7 +20,7 @@ from textual.widgets.option_list import Option
 
 from .. import export
 from ..connections import tilde
-from ..database import MAX_ROWS, QueryError, QueryResult, Relation
+from ..database import MAX_ROWS, Page, QueryError, QueryResult, Relation
 from ..hints import (
     PRODUCTS,
     Context,
@@ -173,6 +173,13 @@ class QueryPanel(Vertical):
         self._syntax: str | None = None
         self._grouping: list[str] = []
         self._syntax_timer = None
+        self._search_timer = None
+        self.paged = False  # the result is one page of a query run page by page
+        self.sql = ""  # the statement being shown
+        self.columns: list[str] = []
+        self.search = ""  # paged: the search the database applied
+        self.total: int | None = None  # paged: rows in all, once counted
+        self.has_more = False  # paged: rows exist after this page
 
     def compose(self) -> ComposeResult:
         yield QueryEditor.code_editor("", language="sql", id="editor", show_line_numbers=True)
@@ -356,6 +363,7 @@ class QueryPanel(Vertical):
     def reset(self) -> None:
         """Forget the results and cached columns of the previous connection."""
         self.result, self.view, self.sort, self._haystack = None, [], None, None
+        self.paged, self.sql, self.columns, self.search, self.total, self.has_more = False, "", [], "", None, False
         self._columns.clear()
         self._loading.clear()
         self.grid.clear(columns=True)
@@ -366,7 +374,9 @@ class QueryPanel(Vertical):
         self.editor.text = sql
         self.editor.move_cursor(self.editor.document.end)
 
-    # Running
+    # Running. A single SELECT is paged: each page, sort and search is a query of its
+    # own (LIMIT/OFFSET or the database's equivalent), so nothing waits for the whole
+    # result. Anything else (SHOW, PRAGMA, …) is fetched up to MAX_ROWS and paged here.
 
     def action_run(self, focus_results: bool = False) -> None:
         db = self.app.db
@@ -380,34 +390,95 @@ class QueryPanel(Vertical):
         if not sql:
             self._set_status(Text("Nothing to run: write a query first.", style="dim"))
             return
+        self.sql, self.sort, self.page, self.search, self.total, self.has_more = sql, None, 0, "", None, False
+        self.query_one("#search", Input).value = ""  # a new query starts unsearched
         self._set_status(Text("Running…", style="dim"))
         self.grid.loading = True
         self._focus_results = focus_results  # a loading widget can't take focus yet
-        self._run(sql)
+        self._load(sql, True, self._page_args())
+
+    def _page_args(self) -> dict:
+        size = self.page_size or MAX_ROWS
+        sort = (self.columns[self.sort[0]], self.sort[1]) if self.sort is not None and self.columns else None
+        return {"offset": self.page * size, "limit": size, "sort": sort, "search": self.search, "columns": list(self.columns)}
+
+    def _reload(self) -> None:
+        self.grid.loading = True
+        self._load(self.sql, False, self._page_args())
 
     @work(thread=True, exclusive=True, group="query")
-    def _run(self, sql: str) -> None:
+    def _load(self, sql: str, first: bool, args: dict) -> None:
+        db = self.app.db
         try:
-            result = self.app.db.run_query(sql, max_rows=MAX_ROWS)
+            try:
+                page = db.fetch_page(sql, **args)
+            except QueryError:
+                if not first:
+                    raise
+                page = None  # the rewritten query failed: run it as typed instead
+            if page is None:
+                self.app.call_from_thread(self._show_all, db.run_query(sql, max_rows=MAX_ROWS))
+            else:
+                self.app.call_from_thread(self._show_page, sql, page, first)
         except (ReadOnlyError, QueryError) as exc:
             self.app.call_from_thread(self._failed, str(exc))
-            return
         except Exception as exc:  # a driver error we didn't anticipate
             self.app.call_from_thread(self._failed, f"{type(exc).__name__}: {exc}")
-            return
-        self.app.call_from_thread(self.show_result, result)
 
     def _failed(self, message: str) -> None:
         self.grid.loading = False
         self._set_status(Text(message, style="red"))
 
-    def show_result(self, result: QueryResult) -> None:
-        self.result, self.sort, self._haystack = result, None, None
-        self.grid.loading = False
+    def _show_page(self, sql: str, page: Page, first: bool) -> None:
+        if sql != self.sql:
+            return  # an earlier query finished late
+        self.paged = True
+        self.result = QueryResult(sql, page.columns, page.rows, False, page.elapsed)
+        self.has_more = page.has_more
+        self.view = list(range(len(page.rows)))
+        if first:
+            self.columns = page.columns
+            self._count()
+        self._shown()
+
+    def _show_all(self, result: QueryResult) -> None:
+        if result.sql != self.sql:
+            return
+        self.paged = False
+        self.result, self.columns, self._haystack = result, result.columns, None
         self._apply_view()
+        self._shown()
+
+    def _shown(self) -> None:
+        self.grid.loading = False
+        self._render_columns()
+        self._render_page()
         if self._focus_results:
+            self._focus_results = False
             self.grid.focus()
         self.refresh_bindings()
+
+    def show_result(self, result: QueryResult) -> None:
+        """Show an already-fetched result (used by tests and callers that ran the query)."""
+        self.sql = result.sql
+        self._show_all(result)
+
+    def _count(self) -> None:
+        self.total = None
+        self._count_rows(self.sql, self.search, list(self.columns))
+
+    @work(thread=True, exclusive=True, group="count")
+    def _count_rows(self, sql: str, search: str, columns: list[str]) -> None:
+        try:
+            total = self.app.db.count_matching(sql, search=search, columns=columns)
+        except Exception:
+            total = None  # the pager says "more" instead
+        self.app.call_from_thread(self._counted, sql, search, total)
+
+    def _counted(self, sql: str, search: str, total: int | None) -> None:
+        if (sql, search) == (self.sql, self.search):
+            self.total = total
+            self._render_status()
 
     # Export
 
@@ -418,12 +489,16 @@ class QueryPanel(Vertical):
             return bool(self.view) and self.grid.has_focus
         return True
 
+    def _row_index(self, grid_row: int) -> int | None:
+        """The index in result.rows of a row of the grid."""
+        position = grid_row if self.paged else self.page * (self.page_size or len(self.view)) + grid_row
+        return self.view[position] if 0 <= position < len(self.view) else None
+
     def action_open_record(self) -> None:
-        size = self.page_size or len(self.view)
-        position = self.page * size + self.grid.cursor_row
-        if position >= len(self.view):
+        index = self._row_index(self.grid.cursor_row)
+        if index is None:
             return
-        row = dict(zip(self.result.columns, self.result.rows[self.view[position]]))
+        row = dict(zip(self.result.columns, self.result.rows[index]))
         refs = tables_in(self.result.sql, sqlglot_dialect(self.app.info.dialect))
         if len(refs) != 1:
             reads = "reads several tables" if refs else "doesn't read a table"
@@ -443,14 +518,13 @@ class QueryPanel(Vertical):
     def action_export(self) -> None:
         result = self.result
         refs = tables_in(result.sql, sqlglot_dialect(self.app.info.dialect))
-        reordered = self.sort is not None or self.query_one("#search", Input).value.strip()
+        if self.paged:
+            choose_rows, shown = bool(self.search or self.sort), self.total
+        else:
+            reordered = self.sort is not None or self.query_one("#search", Input).value.strip()
+            choose_rows, shown = bool(result.truncated or reordered), len(self.view)
         self.app.push_screen(
-            ExportScreen(
-                directory=self.app.cwd,
-                base=refs[0].name if refs else "query",
-                shown=len(self.view),
-                choose_rows=bool(result.truncated or reordered),
-            ),
+            ExportScreen(directory=self.app.cwd, base=refs[0].name if refs else "query", shown=shown, choose_rows=choose_rows),
             self._start_export,
         )
 
@@ -458,24 +532,53 @@ class QueryPanel(Vertical):
         if request is None:
             return
         rows = [self.result.rows[index] for index in self.view]
+        if request.fmt == "clipboard" and self.paged:
+            self._copy_matching(self._filtered())  # every matching row, not just this page
+            return
         if request.fmt == "clipboard":
             self.app.copy_to_clipboard(export.tab_separated(self.result.columns, rows))
             self._set_status(Text(f"Copied {len(rows):,} rows to the clipboard.", style="green"))
             return
         self._set_status(Text("Exporting…", style="dim"))
-        self._export(request, rows if request.scope == "view" else None)
+        if request.scope == "view" and self.paged:  # every row matching the search, in the shown order
+            self._export(request, None, self._filtered())
+        elif request.scope == "view":
+            self._export(request, rows, None)
+        else:  # everything: run the query again and stream it
+            self._export(request, None, self.result.sql)
+
+    def _filtered(self) -> str:
+        args = self._page_args()
+        return self.app.db.filtered_sql(self.sql, sort=args["sort"], search=self.search, columns=args["columns"])
 
     @work(thread=True, exclusive=True, group="export")
-    def _export(self, request: ExportRequest, rows: list[tuple] | None) -> None:
+    def _copy_matching(self, sql: str) -> None:
+        rows, more = [], False
+        try:
+            with self.app.db.stream_query(sql) as (columns, batches):
+                for batch in batches:
+                    rows += batch
+                    if len(rows) > MAX_ROWS:
+                        rows, more = rows[:MAX_ROWS], True
+                        break
+        except (QueryError, ReadOnlyError) as exc:
+            self.app.call_from_thread(self._set_status, Text(f"Copy failed: {exc}", style="red"))
+            return
+        self.app.call_from_thread(self.app.copy_to_clipboard, export.tab_separated(columns, rows))
+        note = f"Copied the first {len(rows):,} rows; export to a file for all of them." if more else f"Copied {len(rows):,} rows to the clipboard."
+        self.app.call_from_thread(self._set_status, Text(note, style="yellow" if more else "green"))
+
+    @work(thread=True, exclusive=True, group="export")
+    def _export(self, request: ExportRequest, rows: list[tuple] | None, sql: str | None) -> None:
         def progress(count: int) -> None:
             self.app.call_from_thread(self._set_status, Text(f"Exporting… {count:,} rows", style="dim"))
 
         try:
-            if rows is not None:  # the rows on screen, after search and sort
+            if rows is not None:
                 batches = (rows[start : start + 1000] for start in range(0, len(rows), 1000))
                 report = export.write(request.fmt, request.path, self.result.columns, batches, progress)
-            else:  # everything: run the query again and stream it
-                with self.app.db.stream_query(self.result.sql) as (columns, batches):
+            else:
+                with self.app.db.stream_query(sql) as (columns, batches):
                     report = export.write(request.fmt, request.path, columns, batches, progress)
         except (QueryError, ReadOnlyError, OSError) as exc:
             self.app.call_from_thread(self._set_status, Text(f"Export failed: {exc}", style="red"))
@@ -491,22 +594,43 @@ class QueryPanel(Vertical):
 
     @on(Input.Changed, "#search")
     def _search_changed(self) -> None:
-        self._apply_view()
+        if not self.paged:
+            self._apply_view()
+            return
+        if self._search_timer is not None:
+            self._search_timer.stop()
+        self._search_timer = self.set_timer(0.4, self._apply_search)  # one query per pause, not per key
+
+    def _apply_search(self) -> None:
+        value = self.query_one("#search", Input).value.strip()
+        if not self.paged or value == self.search:
+            return
+        self.search, self.page = value, 0
+        self._reload()
+        self._count()
 
     @on(Select.Changed, "#page-size")
     def _page_size_changed(self, event: Select.Changed) -> None:
         self.page_size = None if event.value == "all" else int(event.value)
         self.page = 0
-        self._render_page()
+        if self.paged:
+            self._reload()
+        else:
+            self._render_page()
 
     @on(DataTable.HeaderSelected)
     def _header_selected(self, event: DataTable.HeaderSelected) -> None:
         column = event.column_index
         descending = self.sort is not None and self.sort[0] == column and not self.sort[1]
         self.sort = (column, descending)
-        self._apply_view()
+        if self.paged:
+            self.page = 0
+            self._reload()  # the database sorts the whole result
+        else:
+            self._apply_view()
 
     def _apply_view(self) -> None:
+        """In-memory results: filter and sort the fetched rows."""
         if self.result is None:
             return
         rows = self.result.rows
@@ -541,26 +665,53 @@ class QueryPanel(Vertical):
             return
         grid = self.grid
         grid.clear()
-        size = self.page_size or max(len(self.view), 1)
-        pages = max(1, -(-len(self.view) // size))
-        self.page = min(max(self.page, 0), pages - 1)
-        start = self.page * size
-        shown = self.view[start : start + size]
+        if self.paged:
+            shown = self.view
+        else:
+            size = self.page_size or max(len(self.view), 1)
+            pages = max(1, -(-len(self.view) // size))
+            self.page = min(max(self.page, 0), pages - 1)
+            shown = self.view[self.page * size : self.page * size + size]
         rows = self.result.rows
         grid.add_rows([[cell(value) for value in rows[index]] for index in shown])
+        self._render_status()
+
+    def _render_status(self) -> None:
+        if self.result is None:
+            return
         self._set_status(self._summary())
-        if self.view:
-            position = f"Rows {start + 1}–{start + len(shown)} of {len(self.view)}  |  page {self.page + 1} of {pages}"
-        else:
-            position = "No rows"
-        pager = Text(position + "    ", style="dim")
+        pager = Text(self._position() + "    ", style="dim")
         pager.append_text(key_hints(("o", "open record"), ("enter", "full value"), ("[ ]", "page"), ("/", "search"), ("click a header", "sort")))
         self.query_one("#pager", Static).update(pager)
+
+    def _position(self) -> str:
+        if not self.view:
+            return "No rows"
+        if not self.paged:
+            size = self.page_size or max(len(self.view), 1)
+            pages = max(1, -(-len(self.view) // size))
+            start = self.page * size
+            end = min(start + size, len(self.view))
+            return f"Rows {start + 1:,}–{end:,} of {len(self.view):,}  |  page {self.page + 1} of {pages:,}"
+        size = self.page_size or MAX_ROWS
+        start = self.page * size
+        end = start + len(self.view)
+        if self.total is not None:
+            return f"Rows {start + 1:,}–{end:,} of {self.total:,}  |  page {self.page + 1} of {max(1, -(-self.total // size)):,}"
+        if self.has_more:
+            return f"Rows {start + 1:,}–{end:,} of more (counting…)  |  page {self.page + 1}"
+        return f"Rows {start + 1:,}–{end:,} of {end:,}  |  page {self.page + 1} of {self.page + 1}"
 
     def _summary(self) -> Text:
         result = self.result
         if not result.columns:
             return Text(f"Done in {result.elapsed:.2f} s; the statement returned no rows.", style="dim")
+        if self.paged:
+            if self.search:
+                counted = f"{self.total:,} match '{self.search}'" if self.total is not None else f"counting matches for '{self.search}'…"
+            else:
+                counted = f"{self.total:,} row{'' if self.total == 1 else 's'}" if self.total is not None else "counting rows…"
+            return Text(f"{counted}  |  page in {result.elapsed:.2f} s", style="dim")
         parts = [f"{len(result.rows):,} row{'s' if len(result.rows) != 1 else ''}", f"{result.elapsed:.2f} s"]
         if result.truncated:
             parts.append(f"only the first {len(result.rows):,} rows were fetched")
@@ -570,22 +721,34 @@ class QueryPanel(Vertical):
         return Text("  |  ".join(parts), style="dim")
 
     def action_page(self, step: int) -> None:
-        self.page += step
-        self._render_page()
+        if self.result is None:
+            return
+        if self.paged:
+            if (step > 0 and not self.has_more) or (step < 0 and self.page == 0):
+                return
+            self.page += step
+            self._reload()
+        else:
+            self.page += step
+            self._render_page()
 
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()
 
     @on(Input.Submitted, "#search")
     def _search_submitted(self) -> None:
-        self.grid.focus()
+        self._focus_results = True  # once the searched page is in: a loading grid can't take focus
+        self._apply_search()  # don't wait for the pause
+        if not self.grid.loading:
+            self._focus_results = False
+            self.grid.focus()
 
     @on(DataTable.CellSelected)
     def _cell_selected(self, event: DataTable.CellSelected) -> None:
-        size = self.page_size or len(self.view)
-        index = self.view[self.page * size + event.coordinate.row]
-        column = event.coordinate.column
-        self.app.push_screen(CellScreen(self.result.columns[column], self.result.rows[index][column]))
+        index = self._row_index(event.coordinate.row)
+        if index is not None:
+            column = event.coordinate.column
+            self.app.push_screen(CellScreen(self.result.columns[column], self.result.rows[index][column]))
 
     def _set_status(self, text: Text) -> None:
         self.query_one("#status", Static).update(text)
@@ -602,7 +765,7 @@ class ExportScreen(ModalScreen[ExportRequest | None]):
     BINDINGS = [Binding("escape", "cancel", "Cancel"), Binding("ctrl+s", "export", "Export")]
     AUTO_FOCUS = "#format"
 
-    def __init__(self, directory: Path, base: str, shown: int, choose_rows: bool):
+    def __init__(self, directory: Path, base: str, shown: int | None, choose_rows: bool):
         super().__init__()
         self.directory = directory
         self.stem = f"{base}-{datetime.datetime.now():%Y%m%d-%H%M%S}"
@@ -611,7 +774,8 @@ class ExportScreen(ModalScreen[ExportRequest | None]):
         self.suggested = self.stem + ".csv"
 
     def compose(self) -> ComposeResult:
-        scopes = [("All rows (runs the query again)", "all"), (f"The {self.shown:,} rows shown, after search and sort", "view")]
+        shown = f"The {self.shown:,} rows" if self.shown is not None else "The rows"
+        scopes = [("All rows (runs the query again)", "all"), (f"{shown} matching the search, in the shown order", "view")]
         with Vertical(classes="dialog form"):
             yield Label("Export results", classes="title")
             yield form_row("Format", Select([(label, key) for key, label in export.FORMATS.items()], value="csv", allow_blank=False, id="format", compact=True))

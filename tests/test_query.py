@@ -191,26 +191,27 @@ def test_search_and_sort(items_db):
         await settle(pilot)
         panel = app.query_panel
         panel.grid.focus()
-        await pilot.press("slash", *"item 11")
-        await pilot.pause()
+        await pilot.press("slash", *"item 11", "enter")  # enter searches without waiting for a pause
+        await settle(pilot)
         assert [row[1] for row in grid_rows(app)] == ["item 110", "item 111", "item 112", "item 113", "item 114",
                                                      "item 115", "item 116", "item 117", "item 118", "item 119"]
         assert "10 match 'item 11'" in text_of(app, "#status")
 
         panel.query_one("#search", Input).value = ""
-        await pilot.pause()
+        await pilot.press("slash", "enter")
+        await settle(pilot)
         grid = panel.grid
         columns = list(grid.columns.values())
         price_x = sum(column.get_render_width(grid) for column in columns[:2]) + 1
         await pilot.click("#grid", offset=(price_x, 0))  # the price header
-        await pilot.pause()
+        await settle(pilot)
         await pilot.click("#grid", offset=(price_x, 0))  # again: descending
-        await pilot.pause()
+        await settle(pilot)
         assert "price ▼" in str(columns[2].label) or "price ▼" in str(list(grid.columns.values())[2].label)
         prices = [row[2] for row in grid_rows(app)]
         assert prices[0] == "178.5"  # item 120 has no price, so 119 * 1.5 is the largest
         panel.query_one("#page-size", Select).value = "all"
-        await pilot.pause()
+        await settle(pilot)
         prices = [row[2] for row in grid_rows(app)]
         assert prices[-12:] == ["NULL"] * 12  # NULLs stay last when descending
 
@@ -248,5 +249,103 @@ def test_enter_shows_the_full_value(items_db):
         assert '"tags": [\n    "a",' in str(app.screen.query_one("#cell-value Static").content)
         await pilot.press("escape")
         assert not isinstance(app.screen, CellScreen)
+
+    run(app, scenario)
+
+
+# Paging: each page, sort and search is its own query
+
+
+from udb_inspector.sql import count_query, paged_query  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql", "args", "expected"),
+    [
+        ("postgres", "SELECT id, name FROM t ORDER BY id", dict(limit=51, offset=100),
+         "SELECT id, name FROM t ORDER BY id LIMIT 51 OFFSET 100"),  # its own ORDER BY, untouched
+        ("postgres", "SELECT * FROM t LIMIT 30", dict(limit=51),
+         "SELECT * FROM (SELECT * FROM t LIMIT 30) AS q LIMIT 51"),  # its own LIMIT still applies
+        ("postgres", "SELECT * FROM t", dict(columns=["id", "name"], sort=("name", True), search="Bob", limit=51, offset=50),
+         'SELECT * FROM (SELECT * FROM t) AS q WHERE LOWER(CAST("q"."id" AS TEXT)) LIKE \'%bob%\' '
+         'OR LOWER(CAST("q"."name" AS TEXT)) LIKE \'%bob%\' ORDER BY "q"."name" DESC NULLS LAST LIMIT 51 OFFSET 50'),
+        ("tsql", "SELECT id FROM t ORDER BY id", dict(limit=51, offset=100),
+         "SELECT id FROM t ORDER BY id OFFSET 100 ROWS FETCH FIRST 51 ROWS ONLY"),
+        ("tsql", "SELECT id FROM t", dict(limit=51, offset=100),
+         "SELECT id FROM t ORDER BY (SELECT NULL) OFFSET 100 ROWS FETCH FIRST 51 ROWS ONLY"),
+        ("tsql", "WITH a AS (SELECT 1 AS x) SELECT x FROM a ORDER BY x", dict(columns=["x"], search="1", limit=51),
+         "WITH a AS (SELECT 1 AS x) SELECT TOP 51 * FROM (SELECT x AS x FROM a) AS q "
+         "WHERE LOWER(CAST([q].[x] AS VARCHAR(MAX))) LIKE '%1%'"),  # WITH outside, no ORDER BY inside
+        ("oracle", "SELECT id FROM t", dict(columns=["id"], search="7", limit=51, offset=51),
+         "SELECT * FROM (SELECT id FROM t) q WHERE LOWER(CAST(\"q\".\"id\" AS VARCHAR2(4000))) LIKE '%7%' "
+         "OFFSET 51 ROWS FETCH FIRST 51 ROWS ONLY"),
+        ("mysql", "SELECT id FROM t", dict(columns=["id"], sort=("id", False), limit=51),
+         "SELECT * FROM (SELECT id FROM t) AS q ORDER BY CASE WHEN `q`.`id` IS NULL THEN 1 ELSE 0 END, `q`.`id` ASC LIMIT 51"),
+    ],
+)
+def test_paged_query(dialect, sql, args, expected):
+    assert paged_query(sql, dialect, **args) == expected
+
+
+def test_what_cant_be_paged():
+    assert paged_query("PRAGMA table_info(t)", "sqlite", limit=50) is None
+    assert paged_query("SELECT 1; SELECT 2", "postgres", limit=50) is None
+
+
+def test_count_query():
+    assert count_query("SELECT id FROM t ORDER BY id", "tsql", columns=["id"], search="x") == (
+        "SELECT COUNT(*) FROM (SELECT id AS id FROM t) AS q WHERE LOWER(CAST([q].[id] AS VARCHAR(MAX))) LIKE '%x%'"
+    )
+
+
+def test_pages_come_from_the_database(items_db):
+    db = Database(detect(str(items_db)))
+    page = db.fetch_page("SELECT * FROM items", offset=100, limit=50)
+    assert (len(page.rows), page.rows[0][0], page.has_more) == (20, 101, False)
+    page = db.fetch_page("SELECT * FROM items", offset=0, limit=3, sort=("price", True), columns=["id", "name", "price", "notes"])
+    assert [row[2] for row in page.rows] == [178.5, 177.0, 175.5] and page.has_more
+    assert db.count_matching("SELECT * FROM items", search="ITEM 11", columns=["id", "name", "price", "notes"]) == 10
+    assert db.fetch_page("PRAGMA table_info(items)", offset=0, limit=50) is None
+
+
+def test_paging_in_the_tab(items_db):
+    app = InspectorApp(detect(str(items_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("down", "s")
+        await settle(pilot)
+        panel = app.query_panel
+        assert panel.paged and panel.total == 120
+        assert len(panel.result.rows) == 50  # only this page was fetched
+        await pilot.press("right_square_bracket", "right_square_bracket")
+        await settle(pilot)
+        assert grid_rows(app)[0][0] == "101" and "Rows 101–120 of 120  |  page 3 of 3" in text_of(app, "#pager")
+        await pilot.press("right_square_bracket")  # no page 4
+        await settle(pilot)
+        assert panel.page == 2
+
+    run(app, scenario)
+
+
+def test_statements_that_cant_be_paged_are_fetched_whole(items_db, monkeypatch):
+    app = InspectorApp(detect(str(items_db)))
+
+    def rejected(*args, **kwargs):
+        raise QueryError("the rewritten query was rejected")
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("e")
+        app.query_panel.editor.text = "PRAGMA table_info(items)"
+        await pilot.press("ctrl+r")
+        await settle(pilot)
+        assert not app.query_panel.paged and len(grid_rows(app)) == 4
+
+        monkeypatch.setattr(Database, "fetch_page", rejected)
+        app.query_panel.editor.text = "SELECT * FROM items"
+        await pilot.press("ctrl+r")
+        await settle(pilot)
+        assert not app.query_panel.paged and "120 rows" in text_of(app, "#status")  # run as typed instead
 
     run(app, scenario)

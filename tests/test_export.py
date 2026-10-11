@@ -12,7 +12,6 @@ from textual.widgets import Input, Select
 from udb_inspector import export
 from udb_inspector.database import Database
 from udb_inspector.detect import detect
-from udb_inspector.tui import query as query_module
 from udb_inspector.tui.app import InspectorApp
 from udb_inspector.tui.query import ExportScreen
 from udb_inspector.tui.screens import ConfirmScreen
@@ -107,13 +106,12 @@ async def query_items(app, pilot):
     await settle(pilot)
 
 
-def test_export_all_rows_runs_the_query_again(items_db, tmp_path, monkeypatch):
-    monkeypatch.setattr(query_module, "MAX_ROWS", 50)  # so the grid only has some of them
+def test_export_all_rows_runs_the_query_again(items_db, tmp_path):
     app = InspectorApp(detect(str(items_db)), cwd=tmp_path)
 
     async def scenario(pilot):
         await query_items(app, pilot)
-        assert app.query_panel.result.truncated
+        assert app.query_panel.paged and len(app.query_panel.result.rows) == 50  # one page
         await pilot.press("ctrl+s")
         screen = app.screen
         assert isinstance(screen, ExportScreen)
@@ -136,7 +134,8 @@ def test_export_the_rows_shown(items_db, tmp_path):
     async def scenario(pilot):
         await query_items(app, pilot)
         app.query_panel.query_one("#search", Input).value = "item 11"
-        await pilot.pause()
+        await pilot.pause(0.6)  # the search runs once typing pauses
+        await settle(pilot)
         app.query_panel.grid.focus()
         await pilot.press("x")
         screen = app.screen

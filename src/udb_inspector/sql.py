@@ -136,3 +136,96 @@ def syntax_problem(sql: str, dialect: str) -> str | None:
     except TokenError as exc:
         return str(exc)
     return None
+
+
+# Paging: run one page of a query at a time instead of fetching all of it.
+
+
+def single_query(sql: str, read: str | None) -> exp.Query | None:
+    """The statement as a query sqlglot can rewrite, or None (several statements, SHOW, PRAGMA, …)."""
+    try:
+        statements = [s for s in sqlglot.parse(sql, read=read) if s is not None]
+    except (ParseError, TokenError):
+        return None
+    if len(statements) != 1 or not isinstance(statements[0], exp.Query):
+        return None
+    return statements[0]
+
+
+def paged_query(
+    sql: str,
+    read: str | None,
+    *,
+    columns: list[str] = (),
+    sort: tuple[str, bool] | None = None,
+    search: str = "",
+    offset: int = 0,
+    limit: int | None = None,
+) -> str | None:
+    """`sql` limited to one page, sorted by a result column and filtered to rows where
+    any column contains `search`, written for the database. None if it can't be."""
+    query = single_query(sql, read)
+    if query is None:
+        return None
+    if search or sort or _limited(query):
+        page = _wrapped(query, read, keep_order=not sort)
+        if search:
+            page = page.where(_contains(columns, search, read))
+        if sort:
+            column, descending = sort
+            page = page.order_by(exp.Ordered(this=exp.column(column, table="q", quoted=True), desc=descending, nulls_first=False))
+    else:
+        # Limit the query itself, so its own ORDER BY applies as written.
+        page = query.copy()
+    if limit is not None:
+        page = page.limit(limit)
+        if offset:
+            page = page.offset(offset)
+            if read == "tsql" and not page.args.get("order"):
+                # SQL Server's OFFSET needs an ORDER BY; this one keeps the existing order.
+                page = page.order_by(exp.Ordered(this=exp.Paren(this=exp.select(exp.Null())), nulls_first=True))
+    return page.sql(dialect=read)
+
+
+def count_query(sql: str, read: str | None, *, columns: list[str] = (), search: str = "") -> str | None:
+    """SELECT COUNT(*) of what paged_query() pages through."""
+    query = single_query(sql, read)
+    if query is None:
+        return None
+    counted = _wrapped(query, read, keep_order=False).select(exp.Count(this=exp.Star()), append=False)
+    if search:
+        counted = counted.where(_contains(columns, search, read))
+    return counted.sql(dialect=read)
+
+
+def _limited(query: exp.Query) -> bool:
+    return any(query.args.get(key) for key in ("limit", "offset", "fetch"))
+
+
+def _wrapped(query: exp.Query, read: str | None, *, keep_order: bool) -> exp.Select:
+    """SELECT * FROM (query) AS q, so a filter and an order can go around it."""
+    inner = query.copy()
+    with_ = inner.args.get("with_")
+    if with_ is not None:  # SQL Server doesn't allow WITH inside a subquery
+        inner.set("with_", None)
+    limited = _limited(inner)
+    # SQL Server rejects ORDER BY in a subquery unless it's limited; when we sort, the
+    # inner order doesn't matter anyway.
+    if not limited and (not keep_order or read == "tsql"):
+        inner.set("order", None)
+    outer = exp.select("*").from_(inner.subquery("q"))
+    if with_ is not None:
+        outer.set("with_", with_)
+    return outer
+
+
+def _contains(columns: list[str], search: str, read: str | None) -> exp.Expression:
+    """Any column, as lowercase text, contains `search`."""
+    text_type = exp.DataType.build("VARCHAR(4000)" if read == "oracle" else "TEXT")  # Oracle can't make CLOBs of numbers
+    pattern = exp.Literal.string(f"%{search.lower()}%")
+    return exp.or_(
+        *[
+            exp.Like(this=exp.Lower(this=exp.Cast(this=exp.column(name, table="q", quoted=True), to=text_type)), expression=pattern)
+            for name in columns
+        ]
+    )

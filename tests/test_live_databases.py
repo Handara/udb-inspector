@@ -129,3 +129,21 @@ def test_records(server):
     assert db.fetch_row(users, {"id": 1})[1][1] == "a@x"
     assert db.count_rows(orders, {"user_id": 1}) == 2
     assert "WHERE user_id = 1" in db.select_sql(orders, {"user_id": 1})
+
+
+def test_pages_sort_search_and_count(server):
+    _, target = server
+    db = Database(target)
+    columns = ["id", "email", "score", "joined"]
+    page = db.fetch_page("SELECT * FROM users", offset=0, limit=1, columns=columns)
+    assert len(page.rows) == 1 and page.has_more
+    page = db.fetch_page("SELECT * FROM users", offset=1, limit=1, columns=columns)
+    assert len(page.rows) == 1 and not page.has_more
+    sorted_page = db.fetch_page("SELECT * FROM users", offset=0, limit=5, sort=("joined", False), columns=columns)
+    assert [row[3] is None for row in sorted_page.rows] == [False, True]  # NULLs last
+    searched = db.fetch_page("SELECT * FROM users", offset=0, limit=5, search="1.5", columns=columns)
+    assert [row[1] for row in searched.rows] == ["a@x"]  # numbers are searched as text
+    assert db.count_matching("SELECT * FROM users") == 2
+    assert db.count_matching("SELECT * FROM users", search="b@", columns=columns) == 1
+    # Postgres streams through a server-side cursor; the result is the same.
+    assert db.run_query("SELECT email FROM users ORDER BY id", max_rows=1).rows == [("a@x",)]

@@ -18,7 +18,7 @@ from sqlalchemy.exc import DBAPIError, NoSuchModuleError, SAWarning
 from sqlalchemy.types import TypeEngine
 
 from .detect import Target
-from .sql import check_read_only
+from .sql import check_read_only, count_query, paged_query, single_query, sqlglot_dialect
 
 # Reflection warns about things it can't represent (expression indexes,
 # extension types). We report what we can; printed warnings would garble the TUI.
@@ -133,6 +133,14 @@ class QueryResult:
     columns: list[str]
     rows: list[tuple]
     truncated: bool  # the query returned more rows than were fetched
+    elapsed: float  # seconds
+
+
+@dataclass(frozen=True)
+class Page:
+    columns: list[str]
+    rows: list[tuple]
+    has_more: bool  # rows exist after this page
     elapsed: float  # seconds
 
 
@@ -339,13 +347,17 @@ class Database:
 
     def run_query(self, sql: str, max_rows: int = MAX_ROWS) -> QueryResult:
         """Run a read-only query, fetching at most `max_rows` rows."""
-        check_read_only(sql, dialect_name(self.engine.dialect))
+        dialect = dialect_name(self.engine.dialect)
+        check_read_only(sql, dialect)
+        options = {"no_parameters": True}  # send the SQL as typed: no % placeholders for psycopg and pymysql
+        if dialect == "postgresql" and single_query(sql, sqlglot_dialect(dialect)) is not None:
+            # psycopg otherwise downloads the whole result before the first row;
+            # a server-side cursor stops at max_rows.
+            options["stream_results"] = True
         started = time.perf_counter()
         with self._read_only() as conn:
             try:
-                # no_parameters: send the SQL as typed, so psycopg and pymysql
-                # don't read the % in LIKE 'a%' as a placeholder.
-                result = conn.execution_options(no_parameters=True).exec_driver_sql(sql)
+                result = conn.execution_options(**options).exec_driver_sql(sql)
                 if not result.returns_rows:
                     return QueryResult(sql, [], [], False, time.perf_counter() - started)
                 columns = list(result.keys())
@@ -448,6 +460,45 @@ class Database:
         conditions = " AND ".join(f"{quote(column)} = :p{index}" for index, column in enumerate(where))
         params = {f"p{index}": value for index, value in enumerate(where.values())}
         return text(f"{select} WHERE {conditions}").bindparams(**params)
+
+    def fetch_page(
+        self, sql: str, *, offset: int, limit: int, sort: tuple[str, bool] | None = None, search: str = "", columns: list[str] = ()
+    ) -> Page | None:
+        """One page of a query, sorted and searched by the database. None when the
+        query can't be paged (it isn't a single SELECT sqlglot can rewrite)."""
+        dialect = dialect_name(self.engine.dialect)
+        paged = paged_query(
+            sql, sqlglot_dialect(dialect), columns=columns, sort=sort, search=search, offset=offset, limit=limit + 1
+        )
+        if paged is None:
+            return None
+        check_read_only(sql, dialect)
+        started = time.perf_counter()
+        with self._read_only() as conn:
+            try:
+                result = conn.execution_options(no_parameters=True).exec_driver_sql(paged)
+                columns, rows = list(result.keys()), result.fetchall()
+            except DBAPIError as exc:
+                raise QueryError(str(exc.orig).strip()) from None
+        return Page(columns, [tuple(row) for row in rows[:limit]], len(rows) > limit, time.perf_counter() - started)
+
+    def count_matching(self, sql: str, *, search: str = "", columns: list[str] = ()) -> int | None:
+        """How many rows the query returns (with the search applied), or None if it can't be counted."""
+        dialect = dialect_name(self.engine.dialect)
+        counting = count_query(sql, sqlglot_dialect(dialect), columns=columns, search=search)
+        if counting is None:
+            return None
+        check_read_only(sql, dialect)
+        with self._read_only() as conn:
+            try:
+                return int(conn.execution_options(no_parameters=True).exec_driver_sql(counting).scalar_one())
+            except DBAPIError as exc:
+                raise QueryError(str(exc.orig).strip()) from None
+
+    def filtered_sql(self, sql: str, *, sort: tuple[str, bool] | None, search: str, columns: list[str]) -> str:
+        """The query with the search and sort applied but no page limit, for exporting what's shown."""
+        dialect = sqlglot_dialect(dialect_name(self.engine.dialect))
+        return paged_query(sql, dialect, columns=columns, sort=sort, search=search) or sql
 
     @contextmanager
     def stream_query(self, sql: str, batch_size: int = 1000) -> Iterator[tuple[list[str], Iterator[list[tuple]]]]:
