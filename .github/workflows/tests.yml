@@ -20,3 +20,35 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
       - run: pytest
+
+  databases:
+    # Real PostgreSQL and MySQL servers for tests/test_live_databases.py.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: udbi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: udbi
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot" --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      UDBI_TEST_POSTGRES: postgresql+psycopg://postgres:postgres@localhost:5432/udbi
+      UDBI_TEST_MYSQL: mysql+pymysql://root:root@127.0.0.1:3306/udbi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # cryptography: MySQL 8's default login method needs it over a plain connection
+      - run: pip install -e ".[dev,postgres,mysql]" cryptography
+      - run: pytest tests/test_live_databases.py -v
