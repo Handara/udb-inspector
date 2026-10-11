@@ -65,7 +65,11 @@ def main() -> int:
     if args.install:
         target = Path.home() / ".local" / "bin" / binary.name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(binary, target)
+        # Copy beside it and rename over it: a udbi that's running keeps its
+        # old file, where copying onto it would fail with "text file busy".
+        staged = target.with_name(f".{binary.name}.new")
+        shutil.copy2(binary, staged)
+        staged.replace(target)
         print(f"Installed {target}")
     return 0
 
