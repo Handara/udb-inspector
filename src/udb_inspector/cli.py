@@ -54,7 +54,7 @@ def info(name: str | None, global_only: bool) -> int:
         db = Database(resolve(name, global_only=global_only))
         server = db.server_info()
     except (DetectionError, ConnectError) as exc:
-        Console(stderr=True).print(Text.assemble(("error: ", "bold red"), str(exc)))
+        Console(stderr=True, soft_wrap=True).print(Text.assemble(("error: ", "bold red"), str(exc)))  # one line, for logs and grep
         return 1
     try:
         Console().print(connection_table(db.target, server))
