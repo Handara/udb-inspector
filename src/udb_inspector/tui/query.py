@@ -39,7 +39,7 @@ class QueryEditor(TextArea):
         Binding("ctrl+n", "choose(1)", "Next suggestion", show=False),
         Binding("ctrl+p", "choose(-1)", "Previous suggestion", show=False),
         # priority too: TextArea's own escape moves focus on before bindings run.
-        Binding("escape", "dismiss", "Hide suggestions", show=False, priority=True),
+        Binding("escape", "escape", "Hide suggestions or leave", show=False, priority=True),
     ]
 
     def __init__(self, *args, **kwargs) -> None:
@@ -57,7 +57,7 @@ class QueryEditor(TextArea):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "accept":
             return self.can_accept
-        if action in ("choose", "dismiss"):
+        if action == "choose":
             return bool(self.suggestions) and not self.dismissed
         return super().check_action(action, parameters)
 
@@ -70,9 +70,17 @@ class QueryEditor(TextArea):
         self.chosen = (self.chosen + step) % len(self.suggestions)
         self.post_message(self.SuggestionsChanged())
 
-    def action_dismiss(self) -> None:
-        self.dismissed = True
-        self.post_message(self.SuggestionsChanged())
+    def action_escape(self) -> None:
+        """Hide the suggestions; with none showing, leave for the results or the tables."""
+        if self.suggestions and not self.dismissed:
+            self.dismissed = True
+            self.post_message(self.SuggestionsChanged())
+            return
+        panel = next(node for node in self.ancestors if isinstance(node, QueryPanel))
+        if panel.result is not None and panel.result.columns:
+            panel.grid.focus()
+        else:
+            self.app.action_focus_tables()
 
     class SuggestionsChanged(Message):
         pass

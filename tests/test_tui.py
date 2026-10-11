@@ -317,3 +317,54 @@ def test_theme_picker_previews_reverts_and_saves(sample_db):
         assert second.theme == nonlocal_hovered[0]
 
     run(second, restarted)
+
+
+def test_tabs_and_keys_move_focus_where_the_keys_are(sample_db):
+    from textual.widgets import TabbedContent
+
+    app = InspectorApp(detect(str(sample_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        tabs = app.query_one(TabbedContent)
+        await pilot.click("#tabs Tab#--content-tab-query-tab")  # clicking the tab label
+        await pilot.pause()
+        assert tabs.active == "query-tab"
+        assert app.focused is app.query_panel.editor
+        assert "ctrl+r" in app.active_bindings or "ctrl+enter" in app.active_bindings  # Run shows in the footer
+
+        await pilot.press("ctrl+t")  # tables, even from inside the editor
+        assert app.focused is app.tree and tabs.active == "query-tab"
+        await pilot.press("f3")
+        assert app.focused is app.query_panel.editor
+        await pilot.press("f2")
+        assert tabs.active == "schema-tab" and app.focused is app.tree
+
+        await pilot.click("#tabs Tab#--content-tab-query-tab")
+        await pilot.pause()
+        await pilot.click("#tabs Tab#--content-tab-schema-tab")
+        await pilot.pause()
+        assert app.focused is app.tree
+
+    run(app, scenario)
+
+
+def test_esc_walks_out_of_the_editor(sample_db):
+    app = InspectorApp(detect(str(sample_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("e")
+        panel = app.query_panel
+        panel.editor.text = "SELECT 1 AS one"
+        await pilot.press("ctrl+r")
+        await settle(pilot)
+        panel.editor.focus()
+        await pilot.press("escape")  # first hides the keyword suggestions after "one"
+        assert app.focused is panel.editor
+        await pilot.press("escape")
+        assert app.focused is panel.grid
+        await pilot.press("escape")
+        assert app.focused is app.tree
+
+    run(app, scenario)

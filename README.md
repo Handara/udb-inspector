@@ -55,7 +55,9 @@ connection chooser.
 
 | Key | Action |
 | --- | --- |
-| `e` | Open the query editor |
+| `F2` | Schema tab, with the tables focused |
+| `F3`, `e` | Query tab, with the editor focused |
+| `ctrl+t` | Jump to the tables sidebar from anywhere, even the editor |
 | `s` | Query the highlighted table (`SELECT * FROM …`) |
 | `c` | Choose a saved connection (`enter` opens, `a` adds, `d` deletes) |
 | `a` | Add a connection |
@@ -104,7 +106,7 @@ the connected database, such as `LIMIT` for PostgreSQL and `TOP` or
 | --- | --- |
 | `tab` | Insert the highlighted suggestion (indents when there is none) |
 | `ctrl+n` `ctrl+p` | Highlight the next / previous suggestion |
-| `esc` | Hide the suggestions; again to leave the editor |
+| `esc` | Walks outward: hides the suggestions, then leaves the editor for the results, then the tables |
 | `F1` | Cheat sheet for the connected database: limiting rows, paging, quoting, dates, text, catalog queries |
 
 The bar also warns about syntax from other databases (`LIMIT` on SQL Server,

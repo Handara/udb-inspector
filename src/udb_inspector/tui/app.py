@@ -9,7 +9,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, Input, Static, TabbedContent, TabPane, Tree
+from textual.widgets import Footer, Header, Input, Static, TabbedContent, TabPane, Tabs, Tree
 from textual.widgets.tree import TreeNode
 from textual.worker import get_current_worker
 
@@ -41,15 +41,19 @@ class InspectorApp(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("c", "connections", "Connections"),
-        Binding("a", "add_connection", "Add connection"),
+        Binding("a", "add_connection", "Add connection", show=False),  # also in the c chooser
+        Binding("ctrl+t", "focus_tables", "Tables"),
+        Binding("f2", "schema", "Schema"),
+        Binding("f3,e", "query", "Query"),
         Binding("slash", "focus_filter", "Filter"),
-        Binding("e", "query", "Query"),
         Binding("s", "select_rows", "Select rows"),
         Binding("i", "show_connection", "Info"),
         Binding("r", "reload", "Reload schema"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
-    NEEDS_DATABASE = {"focus_filter", "focus_tree", "show_connection", "reload", "clear_filter", "query", "select_rows"}
+    NEEDS_DATABASE = {
+        "focus_filter", "focus_tree", "focus_tables", "schema", "show_connection", "reload", "clear_filter", "query", "select_rows",
+    }
 
     def __init__(self, target: Target | None = None, error: str | None = None, cwd: Path | None = None):
         super().__init__()
@@ -123,6 +127,23 @@ class InspectorApp(App):
     def action_query(self) -> None:
         self._show_tab("query-tab")
         self.query_panel.editor.focus()
+
+    def action_schema(self) -> None:
+        self._show_tab("schema-tab")
+        self.tree.focus()
+
+    def action_focus_tables(self) -> None:
+        self.tree.focus()
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        # Clicking a tab focuses the tab bar, which has no keys of its own, so the
+        # footer would go quiet. Focus what the tab is for instead.
+        inside_query = self.focused is not None and self.query_panel in self.focused.ancestors_with_self
+        if event.tabbed_content.active == "query-tab":
+            if not inside_query:
+                self.query_panel.editor.focus()
+        elif inside_query or self.focused is None or isinstance(self.focused, Tabs):
+            self.tree.focus()
 
     def action_select_rows(self) -> None:
         node = self.tree.cursor_node
