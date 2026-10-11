@@ -355,3 +355,31 @@ def test_the_list_shows_descriptions(sample_db):
         assert any("CROSS JOIN" in p and "every row paired with every row" in p for p in prompts)
 
     run(app, scenario)
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected", "cursor"),
+    [
+        ("SELECT FROM us", "SELECT  FROM users", (0, 7)),
+        ("select   from us", "select  from users", (0, 7)),
+        ("SELECT\nFROM us", "SELECT \nFROM users", (0, 7)),
+        ("SELECT id FROM us", "SELECT id FROM users", (0, 20)),  # columns already there: stay put
+    ],
+)
+def test_picking_a_table_jumps_to_an_empty_select_list(sample_db, typed, expected, cursor):
+    app = InspectorApp(detect(str(sample_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("e")
+        editor = app.query_panel.editor
+        editor.insert(typed)
+        await pilot.pause()
+        await pilot.press("tab", "enter")
+        assert editor.text == expected
+        assert editor.cursor_location == cursor
+        if cursor == (0, 7):
+            await settle(pilot)
+            assert "Suggestions:  id INTEGER" in hint_text(app)  # the table's columns, ready to pick
+
+    run(app, scenario)

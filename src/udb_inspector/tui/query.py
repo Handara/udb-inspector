@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,9 @@ from .screens import ConfirmScreen, form_row, key_hints
 from .values import CellScreen, cell, plain, sort_key
 
 PAGE_SIZES = [("25 rows", "25"), ("50 rows", "50"), ("100 rows", "100"), ("250 rows", "250"), ("1000 rows", "1000"), ("All rows", "all")]
+
+
+EMPTY_SELECT_LIST = re.compile(r"\s*SELECT(\s+)FROM\b", re.IGNORECASE)
 
 
 class QueryEditor(TextArea):
@@ -78,6 +82,21 @@ class QueryEditor(TextArea):
     def insert_suggestion(self, suggestion: Suggestion) -> None:
         row, column = self.cursor_location
         self.replace(suggestion.text, (row, column - len(self.context.prefix)), (row, column))
+        if suggestion.kind in ("table", "view"):
+            self._jump_to_empty_select_list()
+
+    def _jump_to_empty_select_list(self) -> None:
+        """After SELECT FROM orders, put the cursor where the columns go: SELECT | FROM orders."""
+        offset = self.document.get_index_from_location(self.cursor_location)
+        start, _ = statement_range_at(self.text, offset, None)
+        match = EMPTY_SELECT_LIST.match(self.text, start)
+        if match is None:
+            return
+        gap_start, gap_end = match.span(1)
+        location = self.document.get_location_from_index
+        # Two spaces to stand between, keeping any line break the user typed.
+        self.replace("  " if "\n" not in match.group(1) else " " + match.group(1), location(gap_start), location(gap_end))
+        self.move_cursor(location(gap_start + 1))
 
     def action_escape(self) -> None:
         """Hide the suggestions; with none showing, leave for the results or the tables."""

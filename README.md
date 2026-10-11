@@ -125,7 +125,7 @@ the connected database, such as `LIMIT` for PostgreSQL and `TOP` or
 | --- | --- |
 | `tab` | Open the suggestions as a list (indents when there are none) |
 | `↑` `↓`, `tab` `shift+tab` | In the list: move the highlight |
-| `enter` | In the list: insert the highlighted suggestion. Typing a letter goes back to the editor |
+| `enter` | In the list: insert the highlighted suggestion. Typing a letter goes back to the editor. Picking a table for `SELECT FROM …` puts the cursor between `SELECT` and `FROM`, ready for its columns |
 | `alt+←` `alt+→` | Move the cursor by word in the editor |
 | `esc` | Walks outward: hides the suggestions, then leaves the editor for the results, then the tables |
 | `F1` | Cheat sheet for the connected database: limiting rows, paging, quoting, dates, text, catalog queries |
