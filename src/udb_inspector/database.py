@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +17,7 @@ from sqlalchemy.exc import DBAPIError, NoSuchModuleError, SAWarning
 from sqlalchemy.types import TypeEngine
 
 from .detect import Target
+from .sql import check_read_only
 
 # Reflection warns about things it can't represent (expression indexes,
 # extension types). We report what we can; printed warnings would garble the TUI.
@@ -24,6 +28,10 @@ warnings.filterwarnings(
 
 class ConnectError(Exception):
     """The database can't be reached, or its driver isn't installed."""
+
+
+class QueryError(Exception):
+    """The database rejected a query."""
 
 
 AUTH_ERROR = re.compile(r"password|authentication|access denied|login failed|ORA-01017", re.IGNORECASE)
@@ -89,6 +97,28 @@ class TableDetails:
     comment: str | None
     view_definition: str | None
 
+
+@dataclass(frozen=True)
+class QueryResult:
+    sql: str
+    columns: list[str]
+    rows: list[tuple]
+    truncated: bool  # the query returned more rows than were fetched
+    elapsed: float  # seconds
+
+
+MAX_ROWS = 10_000
+
+# Statements that make the transaction (or, for SQLite, the connection)
+# refuse writes. SQL Server and DuckDB have none; the read-only check and the
+# rollback cover them, and their DDL is transactional.
+READ_ONLY_SETUP = {
+    "postgresql": "SET TRANSACTION READ ONLY",
+    "mysql": "SET TRANSACTION READ ONLY",
+    "mariadb": "SET TRANSACTION READ ONLY",
+    "oracle": "SET TRANSACTION READ ONLY",
+    "sqlite": "PRAGMA query_only = ON",
+}
 
 DRIVER_EXTRAS = {
     "postgresql": "postgres",
@@ -240,6 +270,48 @@ class Database:
             keys.append(Key("check", check.get("name"), check["sqltext"]))
 
         return TableDetails(rel, columns, keys, foreign_keys, comment, None)
+
+    def quoted_name(self, rel: Relation) -> str:
+        """The relation's name as SQL, quoted where needed and schema-qualified outside the default schema."""
+        preparer = self.engine.dialect.identifier_preparer
+        name = preparer.quote(rel.name)
+        if rel.schema and rel.schema != self.engine.dialect.default_schema_name:
+            return f"{preparer.quote_schema(rel.schema)}.{name}"
+        return name
+
+    def run_query(self, sql: str, max_rows: int = MAX_ROWS) -> QueryResult:
+        """Run a read-only query, fetching at most `max_rows` rows."""
+        check_read_only(sql, dialect_name(self.engine.dialect))
+        started = time.perf_counter()
+        with self._read_only() as conn:
+            try:
+                # no_parameters: send the SQL as typed, so psycopg and pymysql
+                # don't read the % in LIKE 'a%' as a placeholder.
+                result = conn.execution_options(no_parameters=True).exec_driver_sql(sql)
+                if not result.returns_rows:
+                    return QueryResult(sql, [], [], False, time.perf_counter() - started)
+                columns = list(result.keys())
+                rows = result.fetchmany(max_rows + 1)
+            except DBAPIError as exc:
+                raise QueryError(str(exc.orig).strip()) from None
+        return QueryResult(
+            sql, columns, [tuple(row) for row in rows[:max_rows]], len(rows) > max_rows, time.perf_counter() - started
+        )
+
+    @contextmanager
+    def _read_only(self) -> Iterator[Connection]:
+        """A connection in a read-only transaction that is always rolled back."""
+        with self.engine.connect() as conn:
+            setup = READ_ONLY_SETUP.get(dialect_name(conn.dialect))
+            if setup:
+                try:
+                    conn.exec_driver_sql(setup)
+                except DBAPIError:  # e.g. a Postgres-compatible server without it
+                    conn.rollback()
+            try:
+                yield conn
+            finally:
+                conn.rollback()
 
     def referenced_by(self, rel: Relation) -> list[ForeignKey]:
         """Foreign keys in the same schema that point at `rel`.

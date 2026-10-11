@@ -12,8 +12,57 @@
     padding: 0 1;
 }
 
+#tabs {
+    width: 1fr;
+    height: 1fr;
+}
+
+#tabs TabPane {
+    padding: 0;
+}
+
 #main {
     padding: 1 2;
+}
+
+QueryPanel {
+    height: 1fr;
+}
+
+#editor {
+    height: 10;
+}
+
+#hints, #status, #pager {
+    height: auto;
+    padding: 0 1;
+}
+
+#hints {
+    color: $text-muted;
+}
+
+#result-bar {
+    height: 1;
+    margin: 1 0 0 0;
+}
+
+#search {
+    width: 1fr;
+    margin: 0 1;
+}
+
+#page-size {
+    width: 16;
+}
+
+#grid {
+    height: 1fr;
+}
+
+#cell-value {
+    height: auto;
+    max-height: 30;
 }
 
 ModalScreen {

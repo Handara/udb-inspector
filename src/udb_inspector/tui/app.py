@@ -9,7 +9,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, Input, Static, Tree
+from textual.widgets import Footer, Header, Input, Static, TabbedContent, TabPane, Tree
 from textual.widgets.tree import TreeNode
 from textual.worker import get_current_worker
 
@@ -18,6 +18,7 @@ from ..database import ConnectError, Database, ForeignKey, Relation, ServerInfo,
 from ..detect import DetectionError, Target
 from ..render import connection_table, table_details
 from ..settings import load_settings
+from .query import QueryPanel
 from .screens import ConnectionForm, ConnectionsScreen, PasswordScreen, ThemeScreen, key_hints
 
 
@@ -42,11 +43,13 @@ class InspectorApp(App):
         Binding("c", "connections", "Connections"),
         Binding("a", "add_connection", "Add connection"),
         Binding("slash", "focus_filter", "Filter"),
+        Binding("e", "query", "Query"),
+        Binding("s", "select_rows", "Select rows"),
         Binding("i", "show_connection", "Info"),
         Binding("r", "reload", "Reload schema"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
-    NEEDS_DATABASE = {"focus_filter", "focus_tree", "show_connection", "reload", "clear_filter"}
+    NEEDS_DATABASE = {"focus_filter", "focus_tree", "show_connection", "reload", "clear_filter", "query", "select_rows"}
 
     def __init__(self, target: Target | None = None, error: str | None = None, cwd: Path | None = None):
         super().__init__()
@@ -68,8 +71,12 @@ class InspectorApp(App):
             with Vertical(id="sidebar"):
                 yield FilterInput(placeholder="Filter tables  ( / )", id="filter")
                 yield Tree[NodeData](Text("No database", style="dim"), id="tree")
-            with VerticalScroll(id="main"):
-                yield Static(id="details")
+            with TabbedContent(id="tabs"):
+                with TabPane("Schema", id="schema-tab"):
+                    with VerticalScroll(id="main"):
+                        yield Static(id="details")
+                with TabPane("Query", id="query-tab"):
+                    yield QueryPanel(id="query")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -105,6 +112,28 @@ class InspectorApp(App):
     @property
     def tree(self) -> Tree[NodeData]:
         return self.query_one("#tree", Tree)
+
+    @property
+    def query_panel(self) -> QueryPanel:
+        return self.query_one(QueryPanel)
+
+    def _show_tab(self, tab: str) -> None:
+        self.query_one(TabbedContent).active = tab
+
+    def action_query(self) -> None:
+        self._show_tab("query-tab")
+        self.query_panel.editor.focus()
+
+    def action_select_rows(self) -> None:
+        node = self.tree.cursor_node
+        rel = node.data if node is not None and isinstance(node.data, Relation) else None
+        rel = rel or (self.details.relation if self.details else None)
+        if rel is None:
+            self.notify("Highlight a table in the sidebar first.", timeout=4)
+            return
+        self.query_panel.set_sql(f"SELECT * FROM {self.db.quoted_name(rel)}")
+        self._show_tab("query-tab")
+        self.query_panel.action_run()
 
     def _root_label(self) -> Text:
         if self.db is None or self.info is None:
@@ -183,6 +212,7 @@ class InspectorApp(App):
             previous.close()
         self._set_sub_title()
         self.tree.root.set_label(self._root_label())
+        self.query_panel.reset()
         self.refresh_bindings()
         self.action_reload()
 
@@ -340,6 +370,7 @@ class InspectorApp(App):
         if self.db is None:
             return
         if isinstance(event.node.data, Relation):
+            self._show_tab("schema-tab")
             self.query_one("#main").loading = True
             self.load_details(event.node.data)
         elif event.node.is_root:
@@ -377,6 +408,7 @@ class InspectorApp(App):
         self.query_one("#details", Static).update(table_details(details, referenced_by))
 
     def action_show_connection(self) -> None:
+        self._show_tab("schema-tab")
         self.workers.cancel_group(self, "details")
         self.details = self.referenced_by = None
         self.query_one("#main").loading = False

@@ -55,6 +55,8 @@ connection chooser.
 
 | Key | Action |
 | --- | --- |
+| `e` | Open the query editor |
+| `s` | Query the highlighted table (`SELECT * FROM …`) |
 | `c` | Choose a saved connection (`enter` opens, `a` adds, `d` deletes) |
 | `a` | Add a connection |
 | `↑` `↓`, `enter` | Move through the sidebar; `enter` opens a table or expands a schema |
@@ -68,6 +70,25 @@ Opening a table shows its columns (type, nullability, default, primary key,
 foreign key target), keys and indexes, the foreign keys it holds, and the
 tables whose foreign keys point at it. Opening a view shows its columns and
 its SQL definition.
+
+### Queries
+
+The Query tab (`e`) has an SQL editor. `ctrl+r` (or `F5`, or `ctrl+enter`
+where the terminal supports it) runs the statement under the cursor, or the
+selected text. Results show up to 10,000 rows in a grid:
+
+| Key | Action |
+| --- | --- |
+| `[` `]` | Previous / next page; the page size is picked next to the search box |
+| `/` | Search the results (all columns, case-insensitive) |
+| click a header | Sort by that column; again to reverse. NULLs stay last |
+| `enter` | Show the cell in full, with JSON pretty-printed; `c` copies it |
+
+Queries are read-only. Each statement is checked before it runs, and anything
+that writes (including a `DELETE` inside a `WITH`, `SELECT … INTO` and
+`EXPLAIN ANALYZE` of a write) is refused. On top of that the transaction is
+made read-only where the database supports it (PostgreSQL, MySQL/MariaDB,
+Oracle, and SQLite's `query_only`) and is always rolled back.
 
 Try it with the demo database:
 
