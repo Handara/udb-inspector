@@ -134,3 +134,15 @@ def test_validate(tmp_path, scope, name, fields, problem):
 def test_validate_rejects_duplicates(tmp_path):
     config = save_connection(load_or_new("project", tmp_path), "a", {"url": "sqlite://"}, {})
     assert "already exists" in validate(config, "a", {"url": "sqlite://"})
+
+
+def test_set_allow_writes_keeps_the_rest(tmp_path):
+    from udb_inspector.connection_setup import set_allow_writes
+
+    path = tmp_path / ".udbi.toml"
+    path.write_text('# mine\n[connections.a]\nurl = "sqlite://"  # keep\n')
+    config = set_allow_writes(load_or_new("project", tmp_path), "a", True)
+    assert config.connections["a"]["allow_writes"] is True
+    assert "# mine" in path.read_text() and "# keep" in path.read_text()
+    config = set_allow_writes(config, "a", False)
+    assert "allow_writes" not in config.connections["a"]

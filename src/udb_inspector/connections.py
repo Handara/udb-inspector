@@ -141,9 +141,12 @@ def interpolate(value: str, env: dict[str, str], where: str, env_file: Path) -> 
 
 
 def connection_target(raw: dict, config: Config, where: str) -> Target:
-    unknown = set(raw) - FIELD_KEYS - {"url"}
+    unknown = set(raw) - FIELD_KEYS - {"url", "allow_writes"}
     if unknown:
         raise ConfigError(f"{where}: unknown key {', '.join(sorted(unknown))}")
+    allow_writes = raw.get("allow_writes", False)
+    if not isinstance(allow_writes, bool):
+        raise ConfigError(f"{where}: allow_writes must be true or false")
 
     def value(key: str) -> str | None:
         if key not in raw:
@@ -151,7 +154,7 @@ def connection_target(raw: dict, config: Config, where: str) -> Target:
         return interpolate(str(raw[key]), config.env(), where, config.env_file) or None
 
     if "url" in raw:
-        if set(raw) != {"url"}:
+        if set(raw) - {"allow_writes"} != {"url"}:
             raise ConfigError(f"{where}: use either url or type/host/port/…, not both")
         url = parse_url(value("url") or "")
     else:
@@ -177,7 +180,7 @@ def connection_target(raw: dict, config: Config, where: str) -> Target:
         path = Path(url.database).expanduser()
         if not path.is_absolute():
             url = url.set(database=str(config.path.parent / path))
-    return Target(url, where)
+    return Target(url, where, allow_writes)
 
 
 def resolve(target: str | None, *, global_only: bool = False, cwd: Path | None = None) -> Target:

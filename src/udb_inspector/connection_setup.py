@@ -154,7 +154,7 @@ def _has_password(url: str) -> bool:
         return False
 
 
-def save_connection(config: Config, name: str, fields: dict[str, str], secrets: dict[str, str]) -> Config:
+def save_connection(config: Config, name: str, fields: dict[str, object], secrets: dict[str, str]) -> Config:
     """Add a connection to the config file (creating it if needed) and return the reloaded config."""
     path = config.path
     doc = tomlkit.parse(path.read_text()) if path.is_file() else _new_document(config.scope)
@@ -170,6 +170,18 @@ def save_connection(config: Config, name: str, fields: dict[str, str], secrets: 
     if secrets:
         append_env(config.env_file, secrets)
     return Config.load(path, config.scope)
+
+
+def set_allow_writes(config: Config, name: str, allowed: bool) -> Config:
+    """Turn writing (the Import tab) on or off for a saved connection."""
+    doc = tomlkit.parse(config.path.read_text())
+    table = doc["connections"][name]
+    if allowed:
+        table["allow_writes"] = True
+    elif "allow_writes" in table:
+        del table["allow_writes"]
+    _write(config.path, tomlkit.dumps(doc))
+    return Config.load(config.path, config.scope)
 
 
 def delete_connection(config: Config, name: str) -> None:

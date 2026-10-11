@@ -216,6 +216,12 @@ Which database `udbi` opens:
 The header and `--info` show where the connection came from, such as
 `project ~/code/shop/.udbi.toml [default]` or `global [staging]`.
 
+Connections are read-only unless you allow writes, which the Import tab needs:
+tick "Allow writes" when adding a connection, or press `w` on it in the
+connections list (`c`). This adds `allow_writes = true` to its config. A URL or
+file opened directly can be made writable with `udbi --allow-writes …`. The
+header says "writes allowed" when they are.
+
 `${VAR}` is looked up in the environment first, then the env file. When no
 password is configured, Postgres tries `~/.pgpass`, and otherwise the app asks
 for it.

@@ -399,3 +399,53 @@ def test_ctrl_arrows_move_between_panes(sample_db):
         assert editor.cursor_location == (0, 6)
 
     run(app, scenario)
+
+
+def test_allow_writes_from_the_chooser_and_the_form(tmp_path, sample_db):
+    from textual.widgets import Checkbox
+
+    path = write_global(f'[connections.staging]\nurl = "sqlite:///{sample_db}"\n')
+    app = InspectorApp(None, cwd=tmp_path)
+
+    async def scenario(pilot):
+        await pilot.pause()
+        await pilot.press("w", "y")  # turning writes on asks first
+        await pilot.pause()
+        assert "allow_writes = true" in path.read_text()
+        assert "writes allowed" in str(app.screen.query_one(OptionList).get_option_at_index(1).prompt)
+        await pilot.press("w")  # turning them off doesn't
+        await pilot.pause()
+        assert "allow_writes =" not in path.read_text()
+
+        await pilot.press("a")
+        form = app.screen
+        form.query_one("#name", Input).value = "rw"
+        form.query_one("#type", Select).value = "sqlite"
+        await pilot.pause()
+        form.query_one("#database", Input).value = str(sample_db)
+        form.query_one("#allow-writes", Checkbox).value = True
+        await pilot.press("ctrl+s")
+        await settle(pilot)
+        assert '[connections.rw]\ntype = "sqlite"\ndatabase' in path.read_text() and "allow_writes = true" in path.read_text()
+        assert app.sub_title.endswith("global [rw] · writes allowed")
+
+    run(app, scenario)
+
+
+def test_allow_writes_flag_on_the_command_line(sample_db, monkeypatch):
+    from udb_inspector import cli
+    from udb_inspector.tui import app as tui_app
+
+    opened = []
+
+    class Recorder:
+        def __init__(self, target, error):
+            opened.append(target)
+
+        def run(self):
+            pass
+
+    monkeypatch.setattr(tui_app, "InspectorApp", Recorder)
+    cli.main([str(sample_db), "--allow-writes"])
+    cli.main([str(sample_db)])
+    assert [target.allow_writes for target in opened] == [True, False]

@@ -277,7 +277,8 @@ class InspectorApp(App):
         if self.db is None or self.info is None:
             self.sub_title = "no database"
         else:
-            self.sub_title = f"{self.info.product} {self.info.version} · {self.db.target.source}"
+            writes = " · writes allowed" if self.db.target.allow_writes else ""
+            self.sub_title = f"{self.info.product} {self.info.version} · {self.db.target.source}{writes}"
 
     def _show_empty(self, error: str | None) -> None:
         self.workers.cancel_group(self, "relations")

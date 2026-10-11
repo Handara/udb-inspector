@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 
 from rich.console import Console
 from rich.text import Text
@@ -29,6 +30,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--info", action="store_true", help="print the connection details and exit instead of opening the app"
     )
+    parser.add_argument(
+        "--allow-writes", action="store_true", help="let the Import tab change this database (saved connections have a setting for it)"
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.info:
@@ -38,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     target, error = None, None
     try:
         target = resolve(args.target, global_only=args.global_only)
+        if args.allow_writes:
+            target = replace(target, allow_writes=True)
     except NothingToOpen:
         pass
     except DetectionError as exc:

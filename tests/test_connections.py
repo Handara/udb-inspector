@@ -178,3 +178,12 @@ def test_info_shows_where_the_connection_came_from(tmp_path, sample_db, capsys):
     write_global(f'[connections.staging]\nurl = "sqlite:///{sample_db}"\n')
     assert main(["--info"]) == 0
     assert "global [staging]" in capsys.readouterr().out
+
+
+def test_allow_writes(project):
+    write(project / ".udbi.toml", '[connections.default]\nurl = "sqlite://"\nallow_writes = true\n\n[connections.ro]\nurl = "sqlite://"\n')
+    assert resolve(None, cwd=project).allow_writes is True
+    assert resolve("ro", cwd=project).allow_writes is False
+    write(project / ".udbi.toml", '[connections.default]\nurl = "sqlite://"\nallow_writes = "yes"\n')
+    with pytest.raises(ConfigError, match="allow_writes must be true or false"):
+        resolve(None, cwd=project)

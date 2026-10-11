@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from sqlalchemy.engine import URL, make_url
@@ -17,13 +17,14 @@ class DetectionError(Exception):
 class Target:
     url: URL
     source: str  # where the URL came from, shown to the user
+    allow_writes: bool = False  # the Import tab may change this database
 
     @property
     def display_url(self) -> str:
         return self.url.render_as_string(hide_password=True)
 
     def with_password(self, password: str) -> Target:
-        return Target(self.url.set(password=password), self.source)
+        return replace(self, url=self.url.set(password=password))
 
 
 # Bare schemes get the driver we ship as an install extra, so

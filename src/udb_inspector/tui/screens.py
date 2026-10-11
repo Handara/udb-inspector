@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, OptionList, Select, Static
+from textual.widgets import Button, Checkbox, Input, Label, OptionList, Select, Static
 from textual.widgets.option_list import Option
 
 from ..connection_setup import (
@@ -25,6 +25,7 @@ from ..connection_setup import (
     save_connection,
     saved_connections,
     secret_variable,
+    set_allow_writes,
     validate,
 )
 from ..connections import FILE_TYPES, Config, ConfigError, connection_target, find_project_config, read_env_file, tilde
@@ -105,6 +106,7 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
         Binding("escape", "close", "Close"),
         Binding("a", "add", "Add"),
         Binding("d", "delete", "Delete"),
+        Binding("w", "toggle_writes", "Allow writes"),
         Binding("q", "app.quit", "Quit"),  # app-wide keys don't reach dialogs
     ]
 
@@ -119,14 +121,14 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
             yield OptionList(id="saved")
             yield Static(id="errors", classes="error", markup=False)
             yield Label(
-                key_hints(("enter", "open"), ("a", "add"), ("d", "delete"), ("esc", "close"), ("q", "quit")),
+                key_hints(("enter", "open"), ("a", "add"), ("d", "delete"), ("w", "allow writes"), ("esc", "close"), ("q", "quit")),
                 classes="hint",
             )
 
     def on_mount(self) -> None:
         self.refresh_list()
 
-    def refresh_list(self) -> None:
+    def refresh_list(self, keep: str | None = None) -> None:
         self.saved, errors = saved_connections(self.cwd)
         width = max((len(saved.name) for saved in self.saved), default=0)
         options: list[Option] = []
@@ -136,7 +138,10 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
                 heading = saved.config.label
                 title = "Project" if saved.config.scope == "project" else "Global"
                 options.append(Option(Text.assemble((title, "bold"), f"  {tilde(saved.config.path)}", style="dim"), disabled=True))
-            options.append(Option(Text.assemble(("  " + saved.name.ljust(width), "bold"), "   ", (saved.summary, "dim")), id=f"saved-{index}"))
+            label = Text.assemble(("  " + saved.name.ljust(width), "bold"), "   ", (saved.summary, "dim"))
+            if saved.config.connections[saved.name].get("allow_writes"):
+                label.append("   writes allowed", style="yellow")
+            options.append(Option(label, id=f"saved-{index}"))
         if not self.saved:
             options.append(Option(Text("No saved connections yet.", style="dim italic"), disabled=True))
         options.append(Option(Text("+ Add a connection", style="italic"), id="add"))
@@ -144,7 +149,9 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
         option_list = self.query_one(OptionList)
         option_list.clear_options()
         option_list.add_options(options)
-        option_list.highlighted = next(i for i, option in enumerate(options) if not option.disabled)
+        ids = [option.id for option in options]
+        first = next(i for i, option in enumerate(options) if not option.disabled)
+        option_list.highlighted = ids.index(keep) if keep is not None and keep in ids else first
         option_list.focus()
         self.query_one("#errors", Static).update("\n".join(errors))
 
@@ -161,14 +168,38 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
         if saved is not None:
             self.dismiss(saved)
 
-    def action_delete(self) -> None:
+    def _highlighted(self) -> tuple[str, Saved] | None:
         option_list = self.query_one(OptionList)
         if option_list.highlighted is None:
-            return
+            return None
         option_id = option_list.get_option_at_index(option_list.highlighted).id or ""
         if not option_id.startswith("saved-"):
+            return None
+        return option_id, self.saved[int(option_id.removeprefix("saved-"))]
+
+    def action_toggle_writes(self) -> None:
+        highlighted = self._highlighted()
+        if highlighted is None:
             return
-        saved = self.saved[int(option_id.removeprefix("saved-"))]
+        option_id, saved = highlighted
+        if saved.config.connections[saved.name].get("allow_writes"):
+            set_allow_writes(saved.config, saved.name, False)
+            self.refresh_list(keep=option_id)
+            return
+
+        def confirmed(yes: bool | None) -> None:
+            if yes:
+                set_allow_writes(saved.config, saved.name, True)
+                self.refresh_list(keep=option_id)
+
+        question = f"Allow writes to {saved.name}? The Import tab will be able to insert, update and delete its rows."
+        self.app.push_screen(ConfirmScreen(question), confirmed)
+
+    def action_delete(self) -> None:
+        highlighted = self._highlighted()
+        if highlighted is None:
+            return
+        saved = highlighted[1]
 
         def confirmed(yes: bool | None) -> None:
             if yes:
@@ -210,6 +241,7 @@ class ConnectionForm(ModalScreen[Saved | None]):
             yield form_row("URL", Input(id="url", compact=True), id="row-url")
             for key in SERVER_FIELDS:
                 yield form_row(key.capitalize(), Input(id=key, compact=True), id=f"row-{key}")
+            yield Checkbox("Allow writes: the Import tab may change this database", id="allow-writes", compact=True)
             yield Label("Type values in, or write ${VAR} to read them from the env file.", classes="hint", markup=False)
             yield Label(key_hints(("ctrl+t", "test"), ("ctrl+s", "save"), ("esc", "cancel")), classes="hint")
             yield Static(id="status", markup=False)
@@ -279,8 +311,14 @@ class ConnectionForm(ModalScreen[Saved | None]):
         for key in SERVER_FIELDS:
             self.query_one(f"#{key}", Input).value = fields.get(key, "")
 
-    def _fields(self) -> tuple[dict[str, str], dict[str, str]]:
+    def _fields(self) -> tuple[dict[str, object], dict[str, str]]:
         """Config entries, and secrets to put in the env file."""
+        fields, secrets = self._connection_fields()
+        if self.query_one("#allow-writes", Checkbox).value:
+            fields["allow_writes"] = True
+        return fields, secrets
+
+    def _connection_fields(self) -> tuple[dict[str, object], dict[str, str]]:
         value = lambda key: self.query_one(f"#{key}", Input).value.strip()  # noqa: E731
         type_ = self.query_one("#type", Select).value
         if type_ == "url":
