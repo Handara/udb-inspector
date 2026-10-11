@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rich import box
 from rich.console import Group, RenderableType
+from rich.padding import Padding
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -37,34 +38,35 @@ def connection_table(target: Target, info: ServerInfo) -> Table:
 def table_details(details: TableDetails, referenced_by: list[ForeignKey] | None) -> Group:
     """Everything about one table or view. `referenced_by` is None while it loads."""
     rel = details.relation
-    parts: list[RenderableType] = [Text.assemble((rel.name, "bold"), (f"  {rel.kind} in {rel.schema}", "dim"))]
+    parts: list[RenderableType] = [Text(rel.name, style="bold"), _summary(details, referenced_by)]
     if details.comment:
         parts.append(Text(details.comment, style="italic"))
 
-    parts += _section(f"Columns ({len(details.columns)})", _columns_table(details))
+    parts += _section("Columns", _columns_table(details))
 
     if details.keys:
-        keys = _grid("Kind", "Name", "Definition")
+        keys = _grid("Kind", "Columns", "Name")
         for key in details.keys:
-            keys.add_row(key.kind, key.name or "", key.definition)
+            keys.add_row(key.kind, key.definition, Text(key.name or "", style="dim"))
         parts += _section("Keys and indexes", keys)
 
     if details.foreign_keys:
-        refs = _grid("Columns", "References", "Name")
+        refs = _grid("Columns", "Points to", "Name")
         for fk in details.foreign_keys:
             target = qualified(fk.ref_schema, fk.ref_table, rel.schema)
-            refs.add_row(", ".join(fk.columns), f"{target} ({', '.join(fk.ref_columns)})", fk.name or "")
+            refs.add_row(", ".join(fk.columns), Text(f"→ {target} ({', '.join(fk.ref_columns)})", style="cyan"), Text(fk.name or "", style="dim"))
         parts += _section("References", refs)
 
     if rel.kind == "table":
         if referenced_by is None:
             parts += _section("Referenced by", Text("loading…", style="dim italic"))
         elif not referenced_by:
-            parts += _section("Referenced by", Text("no foreign keys point at this table", style="dim"))
+            parts += _section("Referenced by", Text("No foreign keys point at this table.", style="dim"))
         else:
             incoming = _grid("Table", "Columns", "Name")
             for fk in referenced_by:
-                incoming.add_row(qualified(fk.schema, fk.table, rel.schema), ", ".join(fk.columns), fk.name or "")
+                source = qualified(fk.schema, fk.table, rel.schema)
+                incoming.add_row(Text(f"← {source}", style="cyan"), ", ".join(fk.columns), Text(fk.name or "", style="dim"))
             parts += _section("Referenced by", incoming)
 
     if details.view_definition:
@@ -72,6 +74,20 @@ def table_details(details: TableDetails, referenced_by: list[ForeignKey] | None)
         parts += _section("Definition", sql)
 
     return Group(*parts)
+
+
+def _summary(details: TableDetails, referenced_by: list[ForeignKey] | None) -> Text:
+    rel = details.relation
+    facts = [f"{rel.kind} in {rel.schema}", _count(len(details.columns), "column")]
+    if details.foreign_keys:
+        facts.append(_count(len(details.foreign_keys), "foreign key"))
+    if referenced_by:
+        facts.append(f"referenced by {_count(len({(fk.schema, fk.table) for fk in referenced_by}), 'table')}")
+    return Text("  |  ".join(facts), style="dim")
+
+
+def _count(number: int, word: str) -> str:
+    return f"{number} {word}{'' if number == 1 else 's'}"
 
 
 def _columns_table(details: TableDetails) -> Table:
@@ -82,26 +98,28 @@ def _columns_table(details: TableDetails) -> Table:
         if column.primary_key:
             key.append("PK", style="bold yellow")
         if column.references:
-            key.append(f"{' ' if key else ''}→ {column.references}", style="cyan")
+            key.append(f"{'  ' if key else ''}→ {column.references}", style="cyan")
         row = [
             Text(column.name, style="bold" if column.primary_key else ""),
             column.type,
-            "yes" if column.nullable else "",
+            Text("yes", style="dim") if column.nullable else "",
             column.default or "",
             key,
         ]
         if show_comments:
-            row.append(column.comment or "")
+            row.append(Text(column.comment or "", style="dim"))
         table.add_row(*row)
     return table
 
 
 def _grid(*headers: str) -> Table:
-    table = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="dim")
-    for header in headers:
-        table.add_column(header, overflow="fold")
+    table = Table(box=None, show_edge=False, pad_edge=False, padding=(0, 4, 0, 0), header_style="dim")
+    for index, header in enumerate(headers):
+        last = index == len(headers) - 1
+        table.add_column(header, no_wrap=last, overflow="ellipsis" if last else "fold")
     return table
 
 
 def _section(title: str, body: RenderableType) -> list[RenderableType]:
-    return [Text(""), Text(title, style="bold underline"), body]
+    heading = Text.assemble(("▍", "bold cyan"), (f" {title}", "bold"))
+    return [Text(""), heading, Padding(body, (0, 0, 0, 3))]
