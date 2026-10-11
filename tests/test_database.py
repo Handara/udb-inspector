@@ -114,3 +114,16 @@ def test_duckdb_reports_its_own_version(tmp_path):
     duckdb.connect(str(path)).close()
     info = Database(detect(str(path))).server_info()
     assert (info.product, info.version, info.banner) == ("DuckDB", duckdb.__version__, None)
+
+
+def test_sqlite_unique_after_a_sized_type(tmp_path):
+    path = tmp_path / "u.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE people (id INTEGER PRIMARY KEY, handle VARCHAR(150) NOT NULL UNIQUE, "
+        "code TEXT UNIQUE, a INT, b INT, UNIQUE (a, b))"
+    )
+    conn.close()
+    keys = Database(detect(str(path))).describe(Relation("main", "people", "table")).keys
+    unique = sorted(key.definition for key in keys if key.kind == "unique")
+    assert unique == ["a, b", "code", "handle"]  # each once, handle included

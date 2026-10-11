@@ -269,6 +269,11 @@ class Database:
             keys.append(Key("primary key", pk.get("name"), ", ".join(pk_columns)))
         for uc in _optional(insp.get_unique_constraints, name, schema=schema) or []:
             keys.append(Key("unique", uc.get("name"), ", ".join(uc["column_names"])))
+        if dialect_name(dialect) == "sqlite":
+            # SQLAlchemy misses inline UNIQUE after a sized type (name VARCHAR(150) UNIQUE);
+            # SQLite's own catalog has every one.
+            listed = {key.definition for key in keys if key.kind == "unique"}
+            keys += [Key("unique", None, columns) for columns in self._sqlite_unique(rel) if columns not in listed]
         for ix in insp.get_indexes(name, schema=schema):
             if ix.get("duplicates_constraint"):  # backs a unique constraint listed above
                 continue
@@ -347,6 +352,18 @@ class Database:
                 yield conn
             finally:
                 conn.rollback()
+
+    def _sqlite_unique(self, rel: Relation) -> list[str]:
+        quote = self.engine.dialect.identifier_preparer.quote
+        prefix = f"{quote(rel.schema)}." if rel.schema else ""
+        with self.engine.connect() as conn:
+            indexes = conn.exec_driver_sql(f"PRAGMA {prefix}index_list({quote(rel.name)})").fetchall()
+            found = []
+            for _seq, index, _unique, origin, *_ in indexes:
+                if origin == "u":  # made by a UNIQUE constraint, not CREATE INDEX
+                    info = conn.exec_driver_sql(f"PRAGMA {prefix}index_info({quote(index)})").fetchall()
+                    found.append(", ".join(row[2] for row in info))
+            return found
 
     def referenced_by(self, rel: Relation) -> list[ForeignKey]:
         """Foreign keys in the same schema that point at `rel`.
