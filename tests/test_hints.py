@@ -227,3 +227,100 @@ def test_notes_and_syntax_problems_show_under_the_editor(sample_db):
         assert "SQLite cheat sheet" in str(app.screen.query_one(".title").content)
 
     run(app, scenario)
+
+
+# Explanations and common mistakes
+
+from udb_inspector.hints import explain, grouping_problems  # noqa: E402
+
+
+def explained(sql, dialect="postgresql"):
+    return explain(sql.replace("|", ""), sql.index("|"), dialect)
+
+
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        ("SELECT * FROM employees INNER JOIN projects|", "INNER JOIN: one row for each employees row and projects row"),
+        ("SELECT * FROM employees e LEFT JOIN projects p ON p.lead = e.id|", "LEFT JOIN: every employees row"),
+        ("SELECT * FROM a RIGHT JOIN b ON a.id = b.id|", "RIGHT JOIN: every b row"),
+        ("SELECT * FROM a FULL OUTER JOIN b ON a.id = b.id|", "a rows without a match (b columns NULL)"),
+        ("SELECT * FROM a CROSS JOIN b|", "rows of a × rows of b"),
+        ("SELECT * FROM a NATURAL JOIN b|", "every column name they share"),
+        ("SELECT * FROM t x JOIN t y ON x.id = y.parent|", "each t x row and t y row"),  # a self-join names the sides
+        ("SELECT a.x| FROM a JOIN b ON a.id = b.id", "INNER JOIN"),  # elsewhere: the last join
+        ("SELECT dept, COUNT(*) FROM e GROUP BY dept|", "GROUP BY: one result row per distinct value"),
+        ("SELECT dept FROM e GROUP BY dept HAVING COUNT(*) > 1|", "HAVING filters whole groups"),
+        ("SELECT * FROM t LIMIT 5|", "Without ORDER BY, which rows those are isn't defined"),
+        ("SELECT 1 UNION |", "removes duplicate rows"),
+        ("SELECT 1 UNION ALL |", "keeps every row"),
+        ("SELECT DISTINCT x| FROM t", "DISTINCT removes duplicate rows"),
+    ],
+)
+def test_explanations(sql, expected):
+    assert expected in explained(sql)
+
+
+def test_order_by_says_where_this_database_puts_nulls():
+    assert "PostgreSQL puts NULLs last" in explained("SELECT * FROM t ORDER BY x|")
+    assert "MySQL puts NULLs first" in explained("SELECT * FROM t ORDER BY x|", "mysql")
+
+
+def test_nothing_to_explain_in_a_plain_select():
+    assert explained("SELECT id| FROM t") is None
+
+
+@pytest.mark.parametrize(
+    ("dialect", "sql", "expected"),
+    [
+        ("postgresql", "SELECT project_id,   FROM employee_projects", "comma right before FROM"),
+        ("postgresql", "SELECT * FROM employee_projects INNER JOIN employee_projects", "employee_projects is used twice"),
+        ("postgresql", "SELECT * FROM t WHERE x = NULL", "= NULL is never true"),
+        ("postgresql", "SELECT * FROM t WHERE x <> NULL", "<> NULL is never true"),
+        ("postgresql", "SELECT * FROM t WHERE id NOT IN (SELECT tid FROM u)", "NOT EXISTS doesn't have that trap"),
+        ("mysql", "SELECT * FROM a FULL JOIN b ON a.id = b.id", "MySQL has no FULL JOIN"),
+        ("postgresql", "SELECT * FROM a JOIN b WHERE a.x = 1", "b is joined without ON"),
+    ],
+)
+def test_mistakes(dialect, sql, expected):
+    assert any(expected in note for note in notes(sql, dialect))
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM a x JOIN a y ON x.id = y.parent",  # a self-join with aliases
+        "SELECT * FROM a JOIN b ON a.id = b.id",
+        "SELECT * FROM a JOIN b USING (id)",
+        "SELECT * FROM a CROSS JOIN b",
+        "SELECT * FROM t WHERE x IS NULL",
+    ],
+)
+def test_no_mistakes_in_correct_sql(sql):
+    assert notes(sql, "postgresql") == []
+
+
+def test_grouping_problems():
+    assert grouping_problems("SELECT dept, name, COUNT(*) FROM e GROUP BY dept", "postgresql") == [
+        "name isn't in GROUP BY or an aggregate: PostgreSQL rejects it unless the GROUP BY includes the table's primary key."
+    ]
+    assert grouping_problems("SELECT name, COUNT(*) FROM e", "sqlite") == [
+        "name is mixed with an aggregate but there's no GROUP BY: SQLite takes it from an arbitrary row."
+    ]
+    for fine in ["SELECT dept AS d, COUNT(*) FROM e GROUP BY 1", "SELECT e.dept, COUNT(*) FROM e GROUP BY dept", "SELECT dept FROM e"]:
+        assert grouping_problems(fine, "postgresql") == []
+
+
+def test_the_bar_explains_and_warns(sample_db):
+    app = InspectorApp(detect(str(sample_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("e")
+        app.query_panel.editor.insert("SELECT id,   FROM orders INNER JOIN orders")
+        await pilot.pause()
+        text = hint_text(app)
+        assert "⚠ There's a comma right before FROM" in text and "(+1 more)" in text
+        assert "ℹ INNER JOIN: one row for each orders row and orders row" in text
+
+    run(app, scenario)

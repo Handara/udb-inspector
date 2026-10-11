@@ -6,6 +6,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import ParseError, TokenError
 from sqlglot.tokens import Token, TokenType
 
 from .sql import sqlglot_dialect, statement_ranges, tokenize
@@ -114,13 +117,24 @@ def _in_comment(head: str, tokens: list[Token]) -> bool:
     return "--" in tail.split("\n")[-1] or ("/*" in tail and "*/" not in tail)
 
 
+@dataclass(frozen=True)
+class _Placed:
+    keyword: int  # index of the FROM / JOIN / … token that names the table
+    end: int  # index of the first token after the table and its alias
+    ref: TableRef
+
+
 def tables_in(statement: str, read: str | None) -> list[TableRef]:
     """Tables named after FROM / JOIN / UPDATE / INTO, with their aliases."""
-    tokens = tokenize(statement, read) or []
-    refs, index, in_from = [], 0, False
+    return [placed.ref for placed in _placed_tables(tokenize(statement, read) or [])]
+
+
+def _placed_tables(tokens: list[Token]) -> list[_Placed]:
+    placed, index, in_from = [], 0, False
     names = {T.VAR, T.IDENTIFIER}
     while index < len(tokens):
         kind = tokens[index].token_type
+        keyword = index
         starts = kind in {T.FROM, T.JOIN, T.UPDATE, T.INTO} or (kind == T.COMMA and in_from)
         if kind in {T.FROM, T.JOIN}:
             in_from = True
@@ -140,8 +154,8 @@ def tables_in(statement: str, read: str | None) -> list[TableRef]:
         if index < len(tokens) and tokens[index].token_type in names:
             alias = tokens[index].text
             index += 1
-        refs.append(TableRef(parts[-2] if len(parts) > 1 else None, parts[-1], alias))
-    return refs
+        placed.append(_Placed(keyword, index, TableRef(parts[-2] if len(parts) > 1 else None, parts[-1], alias)))
+    return placed
 
 
 def suggest(
@@ -237,6 +251,8 @@ def notes(statement: str, dialect: str) -> list[str]:
             hint = _function_hint(word, dialect, product)
             if hint:
                 add(hint)
+    for message in _mistakes(tokens, dialect, product):
+        add(message)
     if "`" in statement and dialect not in ("mysql", "mariadb", "sqlite"):
         add(f"{product} doesn't quote names with backticks. Use " + ('[brackets] or "double quotes".' if dialect == "mssql" else '"double quotes".'))
     return found
@@ -307,3 +323,149 @@ CHEAT_SHEETS["mariadb"] = CHEAT_SHEETS["mysql"]
 
 def cheat_sheet(dialect: str) -> list[tuple[str, str]]:
     return list(zip(CHEAT_SHEET_TOPICS, CHEAT_SHEETS.get(dialect, CHEAT_SHEETS["postgresql"])))
+
+
+# Explanations: what the clause under the cursor will do, in the statement's own terms.
+
+JOIN_KINDS = {T.LEFT, T.RIGHT, T.FULL, T.INNER, T.CROSS, T.NATURAL, T.OUTER}
+NULLS_LAST = {"postgresql", "oracle", "duckdb"}  # where NULLs sort by default, ascending
+
+
+def explain(statement: str, cursor: int, dialect: str) -> str | None:
+    """What the clause the cursor is in will do; else what the last join does."""
+    tokens = tokenize(statement, sqlglot_dialect(dialect))
+    if not tokens:
+        return None
+    placed = _placed_tables(tokens)
+    for index in range(len(tokens) - 1, -1, -1):
+        token = tokens[index]
+        if token.start >= cursor:
+            continue
+        kind = token.token_type
+        if kind == T.JOIN:
+            return _explain_join(tokens, index, placed)
+        if kind == T.GROUP_BY:
+            return ("GROUP BY: one result row per distinct value of the grouped columns. Every other selected "
+                    "column has to be inside an aggregate, such as COUNT(*), SUM(…) or MAX(…).")
+        if kind == T.HAVING:
+            return ("HAVING filters whole groups after GROUP BY, so it can use aggregates: HAVING COUNT(*) > 1. "
+                    "To filter rows before they're grouped, use WHERE.")
+        if kind == T.ORDER_BY:
+            where = "last" if dialect in NULLS_LAST else "first"
+            product = PRODUCTS.get(dialect, dialect)
+            return f"ORDER BY sorts the result, smallest first; add DESC for largest first. {product} puts NULLs {where} when ascending."
+        if kind in (T.LIMIT, T.TOP, T.FETCH):
+            ordered = any(t.token_type == T.ORDER_BY for t in tokens)
+            tail = "" if ordered else " Without ORDER BY, which rows those are isn't defined and can change between runs."
+            return f"{token.text.upper()} keeps only the first rows of the result.{tail}"
+        if kind == T.UNION:
+            if index + 1 < len(tokens) and tokens[index + 1].token_type == T.ALL:
+                return "UNION ALL puts the second result under the first and keeps every row, duplicates included."
+            return "UNION puts the second result under the first and removes duplicate rows, which costs a sort. UNION ALL keeps them and is faster."
+        if kind == T.DISTINCT:
+            return "DISTINCT removes duplicate rows, comparing all the selected columns together."
+        if kind == T.WHERE:
+            return "WHERE keeps the rows for which the condition is true. A comparison with NULL is never true; test with IS NULL."
+        if kind in (T.SELECT, T.FROM):
+            break  # nothing to say about these; fall back to the joins
+    joins = [index for index, token in enumerate(tokens) if token.token_type == T.JOIN]
+    return _explain_join(tokens, joins[-1], placed) if joins else None
+
+
+def _explain_join(tokens: list[Token], index: int, placed: list[_Placed]) -> str:
+    kinds = set()
+    before = index - 1
+    while before >= 0 and tokens[before].token_type in JOIN_KINDS:
+        kinds.add(tokens[before].token_type)
+        before -= 1
+    right = next((p.ref for p in placed if p.keyword == index), None)
+    left = [p.ref for p in placed if p.keyword < index]
+    names = [ref.name.lower() for ref in left + ([right] if right else [])]
+    twice = {name for name in names if names.count(name) > 1}  # a self-join: aliases tell the sides apart
+    r = _label(right, twice) if right else "the joined table"
+    l = " + ".join(_label(ref, twice) for ref in left) if left else "the tables before it"
+    if T.CROSS in kinds:
+        return f"CROSS JOIN: every {l} row paired with every {r} row, so rows of {l} × rows of {r}. There's no ON condition."
+    if T.NATURAL in kinds:
+        return (f"NATURAL JOIN: matches {l} and {r} on every column name they share. Adding a column with a shared "
+                "name later silently changes the result; ON is safer.")
+    if T.LEFT in kinds:
+        return f"LEFT JOIN: every {l} row, next to its matching {r} rows. Where {r} has no match, its columns come back NULL."
+    if T.RIGHT in kinds:
+        return f"RIGHT JOIN: every {r} row, next to its matching {l} rows. Where {l} has no match, its columns come back NULL."
+    if T.FULL in kinds:
+        return (f"FULL JOIN: the matching {l}/{r} pairs, plus {l} rows without a match ({r} columns NULL) "
+                f"and {r} rows without a match ({l} columns NULL).")
+    return (f"INNER JOIN: one row for each {l} row and {r} row that match the ON condition. "
+            f"Rows without a match on the other side are left out.")
+
+
+def _label(ref: TableRef, twice: set[str]) -> str:
+    return f"{ref.name} {ref.alias}" if ref.alias and ref.name.lower() in twice else ref.name
+
+
+def _mistakes(tokens: list[Token], dialect: str, product: str) -> list[str]:
+    """Common mistakes that a parser may accept but rarely mean what was intended."""
+    found = []
+    kinds = [token.token_type for token in tokens]
+    for index, kind in enumerate(kinds):
+        following = kinds[index + 1 : index + 4]
+        if kind == T.COMMA and following[:1] == [T.FROM]:
+            found.append("There's a comma right before FROM. Remove it, or add the column you meant.")
+        elif kind in (T.EQ, T.NEQ) and following[:1] == [T.NULL]:
+            found.append(f"{tokens[index].text} NULL is never true, not even for NULLs. Use IS NULL or IS NOT NULL.")
+        elif kind == T.NOT and following == [T.IN, T.L_PAREN, T.SELECT]:
+            found.append("NOT IN (SELECT …) returns no rows at all if the subquery returns a NULL. NOT EXISTS doesn't have that trap.")
+        elif kind == T.JOIN and index and kinds[index - 1] in (T.FULL, T.OUTER) and T.FULL in kinds[max(0, index - 2) : index] and dialect in ("mysql", "mariadb"):
+            found.append(f"{product} has no FULL JOIN. Combine a LEFT JOIN and a RIGHT JOIN with UNION.")
+
+    placed = _placed_tables(tokens)
+    names: dict[str, list[TableRef]] = {}
+    for p in placed:
+        names.setdefault(p.ref.name.lower(), []).append(p.ref)
+    for refs in names.values():
+        aliases = [ref.alias for ref in refs]
+        if len(refs) > 1 and (None in aliases or len(set(aliases)) < len(aliases)):
+            name = refs[0].name
+            found.append(f"{name} is used twice. Give each side its own alias: {name} a JOIN {name} b ON a.… = b.….")
+    for p in placed:
+        if kinds[p.keyword] != T.JOIN or {T.CROSS, T.NATURAL} & set(kinds[max(0, p.keyword - 2) : p.keyword]):
+            continue
+        if p.end < len(tokens) and kinds[p.end] not in (T.ON, T.USING, T.SEMICOLON):
+            found.append(f"{p.ref.name} is joined without ON, so nothing says which rows match. Add ON {p.ref.alias or p.ref.name}.… = ….")
+    return found
+
+
+def grouping_problems(statement: str, dialect: str) -> list[str]:
+    """Selected columns that are neither grouped nor aggregated."""
+    try:
+        tree = sqlglot.parse_one(statement, read=sqlglot_dialect(dialect))
+    except (ParseError, TokenError, ValueError):
+        return []
+    if tree is None:
+        return []
+    consequence = {
+        "sqlite": "SQLite takes it from an arbitrary row",
+        "mysql": "MySQL rejects it unless ONLY_FULL_GROUP_BY is turned off",
+        "mariadb": "MariaDB takes it from an arbitrary row unless ONLY_FULL_GROUP_BY is on",
+        "postgresql": "PostgreSQL rejects it unless the GROUP BY includes the table's primary key",
+    }.get(dialect, f"{PRODUCTS.get(dialect, dialect)} rejects it")
+    problems = []
+    for select in tree.find_all(exp.Select):
+        group = select.args.get("group")
+        grouped = list(group.expressions) if group else []
+        aggregated = any(e.find(exp.AggFunc) for e in select.expressions)
+        if not grouped and not aggregated:
+            continue
+        names = {g.name.lower() for g in grouped if isinstance(g, exp.Column)}
+        positions = {int(g.this) for g in grouped if isinstance(g, exp.Literal) and g.is_int}
+        for position, expression in enumerate(select.expressions, 1):
+            inner = expression.this if isinstance(expression, exp.Alias) else expression
+            if not isinstance(inner, exp.Column) or position in positions:
+                continue
+            alias = expression.alias.lower() if isinstance(expression, exp.Alias) else ""
+            if inner.name.lower() in names or (alias and alias in names):
+                continue
+            how = "isn't in GROUP BY or an aggregate" if grouped else "is mixed with an aggregate but there's no GROUP BY"
+            problems.append(f"{inner.sql()} {how}: {consequence}.")
+    return problems

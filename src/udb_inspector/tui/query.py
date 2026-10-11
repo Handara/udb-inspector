@@ -20,8 +20,20 @@ from textual.widgets.option_list import Option
 from .. import export
 from ..connections import tilde
 from ..database import MAX_ROWS, QueryError, QueryResult, Relation
-from ..hints import PRODUCTS, Context, Suggestion, TableRef, cheat_sheet, context_at, notes, suggest, tables_in
-from ..sql import ReadOnlyError, sqlglot_dialect, statement_at, syntax_problem
+from ..hints import (
+    PRODUCTS,
+    Context,
+    Suggestion,
+    TableRef,
+    cheat_sheet,
+    context_at,
+    explain,
+    grouping_problems,
+    notes,
+    suggest,
+    tables_in,
+)
+from ..sql import ReadOnlyError, sqlglot_dialect, statement_at, statement_range_at, syntax_problem
 from .record import RecordScreen
 from .screens import ConfirmScreen, form_row, key_hints
 from .values import CellScreen, cell, plain, sort_key
@@ -135,7 +147,9 @@ class QueryPanel(Vertical):
         self._focus_results = False
         self._loading: set[Relation] = set()
         self._notes: list[str] = []
+        self._explanation: str | None = None
         self._syntax: str | None = None
+        self._grouping: list[str] = []
         self._syntax_timer = None
 
     def compose(self) -> ComposeResult:
@@ -168,7 +182,7 @@ class QueryPanel(Vertical):
         editor = self.editor
         if isinstance(event, TextArea.Changed):
             editor.dismissed = False
-            self._syntax = None
+            self._syntax, self._grouping = None, []
             if self._syntax_timer is not None:
                 self._syntax_timer.stop()
             self._syntax_timer = self.set_timer(0.6, self._check_syntax)
@@ -221,8 +235,10 @@ class QueryPanel(Vertical):
         editor.suggestions = suggest(
             context, info.dialect, self._tables(), self._columns_for, db.engine.dialect.identifier_preparer.quote
         )[:50]
-        statement = statement_at(editor.text, offset, sqlglot_dialect(info.dialect))
+        start, end = statement_range_at(editor.text, offset, sqlglot_dialect(info.dialect))
+        statement = editor.text[start:end]
         self._notes = notes(statement, info.dialect)
+        self._explanation = explain(statement, offset - start, info.dialect)
         self._render_hints()
 
     def _tables(self) -> list[tuple[str, str, str]]:
@@ -272,6 +288,7 @@ class QueryPanel(Vertical):
         offset = editor.document.get_index_from_location(editor.cursor_location)
         statement = statement_at(editor.text, offset, sqlglot_dialect(self.app.info.dialect))
         self._syntax = syntax_problem(statement, self.app.info.dialect)
+        self._grouping = grouping_problems(statement, self.app.info.dialect)
         self._render_hints()
 
     def _render_hints(self) -> None:
@@ -298,15 +315,17 @@ class QueryPanel(Vertical):
             lines.append(line)
         elif context.kind == "column" and not context.scope and editor.text.strip():
             lines.append(Text("Name a table after FROM to get its columns.", style="dim"))
-        if self._notes:
-            lines.append(Text("⚠ " + self._notes[0], style="yellow"))
-        elif self._syntax:
-            lines.append(Text("⚠ " + self._syntax, style="yellow"))
-        if editor.can_suggest and not listing.display:
+        warnings = self._notes + self._grouping + ([self._syntax] if self._syntax else [])
+        if warnings:
+            more = f"   (+{len(warnings) - 1} more)" if len(warnings) > 1 else ""
+            lines.append(Text.assemble(("⚠ " + warnings[0], "yellow"), (more, "dim")))
+        if self._explanation:
+            lines.append(Text.assemble(("ℹ ", "cyan"), (self._explanation, "italic")))
+        if editor.can_suggest and not listing.display and len(lines) < 3:
             lines.append(key_hints(("tab", "pick a suggestion"), ("esc", "hide"), ("ctrl+enter", "run"), ("f1", "cheat sheet")))
         if not lines:
             lines.append(self._default_hints())
-        self.query_one("#hints", Static).update(Group(*lines[:2]))  # a Group keeps each line's no_wrap
+        self.query_one("#hints", Static).update(Group(*lines[:3]))  # a Group keeps each line's no_wrap
 
     def action_cheat_sheet(self) -> None:
         if self.app.info is not None:

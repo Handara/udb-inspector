@@ -142,6 +142,16 @@ data": every field of the row with its type, fetched fresh by primary key.
 Records open from queries on a single table. If the query left out the primary
 key, the record shows the row as the query returned it.
 
+A line in the bar also explains what the clause at the cursor will do, with
+the statement's own table names: what an `INNER`, `LEFT`, `RIGHT`, `FULL`,
+`CROSS` or `NATURAL JOIN` keeps and where NULLs appear, what `GROUP BY` and
+`HAVING` require, `DISTINCT`, `UNION` versus `UNION ALL`, where this database
+sorts NULLs in `ORDER BY`, and that `LIMIT` without `ORDER BY` picks undefined
+rows. And it warns about common mistakes: a comma right before `FROM`, a table
+joined to itself without aliases, a `JOIN` without `ON`, `= NULL`, the
+`NOT IN (SELECT …)` NULL trap, `FULL JOIN` on MySQL, and selected columns that
+are neither grouped nor aggregated.
+
 Queries are read-only. Each statement is checked before it runs, and anything
 that writes (including a `DELETE` inside a `WITH`, `SELECT … INTO` and
 `EXPLAIN ANALYZE` of a write) is refused. On top of that the transaction is

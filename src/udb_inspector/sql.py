@@ -64,13 +64,18 @@ def statement_ranges(text: str, dialect: str | None) -> list[tuple[int, int]]:
 
 def statement_at(text: str, offset: int, dialect: str | None) -> str:
     """The statement under the cursor, or the one just before it."""
+    start, end = statement_range_at(text, offset, dialect)
+    return text[start:end].strip()
+
+
+def statement_range_at(text: str, offset: int, dialect: str | None) -> tuple[int, int]:
+    """(start, end) of the statement under the cursor, or of the one just before it."""
     ranges = statement_ranges(text, dialect)
     for start, end in ranges:
         if start <= offset <= end:
-            return text[start:end].strip()
+            return start, end
     before = [r for r in ranges if r[1] <= offset]
-    chosen = before[-1] if before else (ranges[0] if ranges else None)
-    return text[chosen[0] : chosen[1]].strip() if chosen else ""
+    return before[-1] if before else (ranges[0] if ranges else (offset, offset))
 
 
 def check_read_only(sql: str, dialect: str) -> None:
