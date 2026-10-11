@@ -30,6 +30,7 @@ from ..connection_setup import (
 from ..connections import FILE_TYPES, Config, ConfigError, connection_target, find_project_config, read_env_file, tilde
 from ..database import ConnectError, Database
 from ..detect import DetectionError, Target
+from ..settings import save_setting
 
 TYPE_OPTIONS = [
     ("URL", "url"),
@@ -44,6 +45,17 @@ TYPE_OPTIONS = [
 SERVER_FIELDS = ["host", "port", "database", "user", "password"]
 
 
+def key_hints(*pairs: tuple[str, str]) -> Text:
+    """'enter open | esc close', with the keys in bold."""
+    text = Text()
+    for index, (key, action) in enumerate(pairs):
+        if index:
+            text.append("  |  ", style="dim")
+        text.append(key, style="bold")
+        text.append(f" {action}")
+    return text
+
+
 class ConfirmScreen(ModalScreen[bool]):
     BINDINGS = [Binding("y", "answer(True)", "Yes"), Binding("n,escape", "answer(False)", "No")]
 
@@ -54,7 +66,7 @@ class ConfirmScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog small"):
             yield Label(self.question, markup=False)
-            yield Label("y  yes · n  no", classes="hint")
+            yield Label(key_hints(("y", "yes"), ("n", "no")), classes="hint")
 
     def action_answer(self, answer: bool) -> None:
         self.dismiss(answer)
@@ -77,7 +89,7 @@ class PasswordScreen(ModalScreen[str | None]):
             if self.error:
                 yield Label(self.error, classes="error", markup=False)
             yield Input(password=True, id="password")
-            yield Label("enter  connect · esc  cancel", classes="hint")
+            yield Label(key_hints(("enter", "connect"), ("esc", "cancel")), classes="hint")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.dismiss(event.value)
@@ -106,7 +118,10 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
             yield Label("Connections", classes="title")
             yield OptionList(id="saved")
             yield Static(id="errors", classes="error", markup=False)
-            yield Label("enter  open · a  add · d  delete · esc  close · q  quit", classes="hint")
+            yield Label(
+                key_hints(("enter", "open"), ("a", "add"), ("d", "delete"), ("esc", "close"), ("q", "quit")),
+                classes="hint",
+            )
 
     def on_mount(self) -> None:
         self.refresh_list()
@@ -195,12 +210,8 @@ class ConnectionForm(ModalScreen[Saved | None]):
             yield _row("URL", Input(id="url", compact=True), id="row-url")
             for key in SERVER_FIELDS:
                 yield _row(key.capitalize(), Input(id=key, compact=True), id=f"row-{key}")
-            yield Label(
-                "Type values in, or write ${VAR} to read them from the env file.\n"
-                "ctrl+t  test · ctrl+s  save · esc  cancel",
-                classes="hint",
-                markup=False,
-            )
+            yield Label("Type values in, or write ${VAR} to read them from the env file.", classes="hint", markup=False)
+            yield Label(key_hints(("ctrl+t", "test"), ("ctrl+s", "save"), ("esc", "cancel")), classes="hint")
             yield Static(id="status", markup=False)
             with Horizontal(classes="buttons"):
                 yield Button("Test", id="test")
@@ -341,3 +352,47 @@ class ConnectionForm(ModalScreen[Saved | None]):
 
 def _row(label: str, widget, id: str | None = None) -> Horizontal:
     return Horizontal(Label(label, classes="field-label"), widget, classes="row", id=id)
+
+
+class HoverOptionList(OptionList):
+    """An option list where the mouse moves the highlight, not just a hover tint."""
+
+    def on_mouse_move(self, event) -> None:
+        index = event.style.meta.get("option")
+        if index is not None and index != self.highlighted:
+            self.highlighted = index
+
+
+class ThemeScreen(ModalScreen[None]):
+    """Pick a theme; the highlighted one is previewed live."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.original = self.app.theme
+        self.names = sorted(self.app.available_themes)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog small"):
+            yield Label("Theme", classes="title")
+            yield HoverOptionList(*[Option(name, id=name) for name in self.names], id="themes")
+            yield Label(key_hints(("↑↓", "preview"), ("enter", "keep"), ("esc", "cancel")), classes="hint")
+
+    def on_mount(self) -> None:
+        themes = self.query_one(HoverOptionList)
+        if self.original in self.names:
+            themes.highlighted = self.names.index(self.original)
+        themes.focus()
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        self.app.theme = event.option.id
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.app.theme = event.option.id
+        save_setting("theme", event.option.id)
+        self.dismiss()
+
+    def action_cancel(self) -> None:
+        self.app.theme = self.original
+        self.dismiss()

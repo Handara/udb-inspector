@@ -273,3 +273,47 @@ def test_q_quits_from_the_chooser(tmp_path):
         assert app.return_code == 0
 
     run(app, scenario)
+
+
+def test_theme_picker_previews_reverts_and_saves(sample_db):
+    from textual.binding import Binding
+
+    from udb_inspector.settings import load_settings
+    from udb_inspector.tui.screens import ThemeScreen
+
+    app = InspectorApp(detect(str(sample_db)))
+    nonlocal_hovered = []
+
+    async def scenario(pilot):
+        await settle(pilot)
+        assert app.get_key_display(Binding("ctrl+p", "command_palette")) == "ctrl+p"
+        original = app.theme
+
+        app.action_change_theme()
+        await pilot.pause()
+        assert isinstance(app.screen, ThemeScreen)
+        await pilot.press("down")
+        previewed = app.theme
+        assert previewed != original
+        await pilot.press("escape")
+        assert app.theme == original
+
+        app.action_change_theme()
+        await pilot.pause()
+        await pilot.hover("#themes", offset=(2, 3))  # the mouse previews too
+        await pilot.pause()
+        nonlocal_hovered.append(app.theme)
+        hovered = app.theme
+        assert hovered == sorted(app.available_themes)[3]
+        await pilot.press("enter")
+        assert load_settings()["theme"] == hovered
+
+    run(app, scenario)
+
+    second = InspectorApp(detect(str(sample_db)))
+
+    async def restarted(pilot):
+        await settle(pilot)
+        assert second.theme == nonlocal_hovered[0]
+
+    run(second, restarted)

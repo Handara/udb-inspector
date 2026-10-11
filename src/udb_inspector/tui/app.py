@@ -17,7 +17,8 @@ from ..connection_setup import Saved
 from ..database import ConnectError, Database, ForeignKey, Relation, ServerInfo, TableDetails, is_auth_error
 from ..detect import DetectionError, Target
 from ..render import connection_table, table_details
-from .screens import ConnectionForm, ConnectionsScreen, PasswordScreen
+from ..settings import load_settings
+from .screens import ConnectionForm, ConnectionsScreen, PasswordScreen, ThemeScreen, key_hints
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,9 @@ class InspectorApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        theme = load_settings().get("theme")
+        if theme in self.available_themes:
+            self.theme = theme
         if self.initial_target is not None:
             self.open_target(self.initial_target)
             return
@@ -83,6 +87,13 @@ class InspectorApp(App):
     def on_unmount(self) -> None:
         if self.db is not None:
             self.db.close()
+
+    def get_key_display(self, binding: Binding) -> str:
+        # Textual writes ctrl+p as ^p, which reads as noise to most people.
+        return super().get_key_display(binding).replace("^", "ctrl+")
+
+    def action_change_theme(self) -> None:
+        self.push_screen(ThemeScreen())
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if len(self.screen_stack) > 1:
@@ -191,10 +202,7 @@ class InspectorApp(App):
         parts = [Text("No database connected", style="bold"), Text("")]
         if error:
             parts += [Text(error, style="red"), Text("")]
-        parts += [
-            Text.assemble(("c", "bold"), "  choose a saved connection"),
-            Text.assemble(("a", "bold"), "  add a connection"),
-        ]
+        parts.append(key_hints(("c", "choose a saved connection"), ("a", "add a connection")))
         self.query_one("#details", Static).update(Group(*parts))
         self._set_sub_title()
         self.refresh_bindings()
