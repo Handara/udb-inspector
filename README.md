@@ -14,15 +14,16 @@ Excel.
 curl -fsSL https://raw.githubusercontent.com/Handara/udb-inspector/main/install.sh | sh
 ```
 
-This puts a single `udbi` file in `~/.local/bin` (set `UDBI_INSTALL_DIR` to
-choose another folder). It carries its own Python and the drivers for SQLite,
-PostgreSQL, MySQL/MariaDB, Oracle and DuckDB, so there is nothing else to
-install. Run the same command again to update.
+This installs udbi in `~/.local/share/udbi` and the `udbi` command in
+`~/.local/bin` (set `UDBI_INSTALL_DIR` for another folder). It carries its own
+Python and the drivers for SQLite, PostgreSQL, MySQL/MariaDB, Oracle and
+DuckDB, so there is nothing else to install. Run the same command again to
+update.
 
-**Windows:** download `udbi-windows-x86_64.exe` from the
+**Windows:** download `udbi-windows-x86_64.zip` from the
 [latest release](https://github.com/Handara/udb-inspector/releases/latest),
-rename it to `udbi.exe` and put it in a folder on your PATH. The executables
-aren't signed, so Windows SmartScreen may warn the first time.
+unzip it, and add the `udbi` folder to your PATH. It isn't signed, so Windows
+SmartScreen may warn the first time.
 
 **With Python** (any platform, and the only way to get SQL Server, which also
 needs Microsoft's ODBC driver):
@@ -34,13 +35,15 @@ pipx install "udb-inspector[all] @ git+https://github.com/Handara/udb-inspector"
 ### Building it yourself
 
 ```sh
-python3 scripts/build_binary.py             # writes dist/udbi (about 60 MB)
-python3 scripts/build_binary.py --install   # and copies it to ~/.local/bin/udbi
+python3 scripts/build_binary.py             # writes the dist/udbi/ folder
+python3 scripts/build_binary.py --install   # and installs it like install.sh does
 ```
 
-The build makes its own virtualenv in `build/`. The executable runs on the OS
-and CPU it was built on, and on Linux needs a glibc at least as new as the
-build machine's.
+The build makes its own virtualenv in `build/`. It produces a folder rather
+than a single file, because a single file has to unpack itself (about 190 MB)
+on every launch, which makes it slow to start on small servers. The result
+runs on the OS and CPU it was built on, and on Linux needs a glibc at least as
+new as the build machine's.
 
 ### Working on udbi
 

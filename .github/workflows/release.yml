@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag like v0.1.0 builds udbi on each platform and attaches the
-# executables to a GitHub release of that name.
+# archives (the udbi folder, .tar.gz or .zip) to a GitHub release of that name.
 on:
   push:
     tags: ["v*"]
@@ -34,27 +34,26 @@ jobs:
           - os: macos-14
             asset: udbi-macos-arm64
           - os: windows-latest
-            asset: udbi-windows-x86_64.exe
+            asset: udbi-windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python scripts/build_binary.py
-      - name: Smoke test and name the executable
+      - run: python scripts/build_binary.py --archive ${{ matrix.asset }}
+      - name: Smoke test
         shell: bash
         run: |
-          binary=dist/udbi
-          if [ -f dist/udbi.exe ]; then binary=dist/udbi.exe; fi
+          binary=dist/udbi/udbi
+          if [ -f dist/udbi/udbi.exe ]; then binary=dist/udbi/udbi.exe; fi
           "$binary" --help
           python scripts/make_demo_db.py demo.sqlite3
           "$binary" demo.sqlite3 --info
-          mv "$binary" "${{ matrix.asset }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}.*
 
   release:
     needs: build
