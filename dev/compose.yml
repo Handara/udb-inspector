@@ -6,7 +6,7 @@
 #   python scripts/seed_dev_databases.py \
 #     mysql=mysql://root:udbi@127.0.0.1:53306/udbi \
 #     mariadb=mariadb://root:udbi@127.0.0.1:53307/udbi \
-#     sqlserver=mssql+pymssql://sa:Udbi-dev-1@127.0.0.1:51433/master \
+#     sqlserver=mssql+pymssql://sa:Udbi-dev-1@127.0.0.1:51433/udbi \
 #     "oracle=oracle+oracledb://udbi:udbi@127.0.0.1:51521/?service_name=FREEPDB1"
 #
 # The passwords are for these throwaway containers only.

@@ -144,6 +144,9 @@ def load(conn, table: Table, rows, dialect: str) -> None:
         conn.exec_driver_sql(f"COPY {table.name} FROM '{fh.name}' (HEADER false, NULLSTR '')")
         os.unlink(fh.name)
         return
+    if dialect == "mssql" and hasattr(conn.connection.dbapi_connection, "bulk_copy"):  # pymssql
+        conn.connection.dbapi_connection.bulk_copy(table.name, rows(), batch_size=10_000, tablock=True)
+        return
     batch = []
     for row in rows():
         batch.append(dict(zip(names, row)))
@@ -154,7 +157,17 @@ def load(conn, table: Table, rows, dialect: str) -> None:
         conn.execute(insert(table), batch)
 
 
+def create_database(url: URL) -> None:
+    """SQL Server containers start with only master, which has Microsoft's own tables in it."""
+    engine = create_engine(url.set(database="master"), isolation_level="AUTOCOMMIT")
+    with engine.connect() as conn:
+        conn.exec_driver_sql(f"IF DB_ID(N'{url.database}') IS NULL CREATE DATABASE [{url.database}]")
+    engine.dispose()
+
+
 def seed(name: str, url: URL, rows: int) -> None:
+    if url.get_backend_name() == "mssql" and url.database not in (None, "master"):
+        create_database(url)
     engine = create_engine(url)
     dialect = engine.dialect.name
     started = time.perf_counter()
