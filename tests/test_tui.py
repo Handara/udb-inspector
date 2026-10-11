@@ -260,3 +260,16 @@ def test_delete_from_the_chooser(tmp_path):
         assert [s.name for s in app.screen.saved] == ["two"]
 
     run(app, scenario)
+
+
+def test_q_quits_from_the_chooser(tmp_path):
+    app = InspectorApp(None, cwd=tmp_path)
+
+    async def scenario(pilot):
+        await pilot.pause()
+        assert isinstance(app.screen, ConnectionsScreen)
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.return_code == 0
+
+    run(app, scenario)

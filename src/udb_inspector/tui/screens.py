@@ -93,6 +93,7 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
         Binding("escape", "close", "Close"),
         Binding("a", "add", "Add"),
         Binding("d", "delete", "Delete"),
+        Binding("q", "app.quit", "Quit"),  # app-wide keys don't reach dialogs
     ]
 
     def __init__(self, cwd: Path):
@@ -105,7 +106,7 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
             yield Label("Connections", classes="title")
             yield OptionList(id="saved")
             yield Static(id="errors", classes="error", markup=False)
-            yield Label("enter  open · a  add · d  delete · esc  close", classes="hint")
+            yield Label("enter  open · a  add · d  delete · esc  close · q  quit", classes="hint")
 
     def on_mount(self) -> None:
         self.refresh_list()
