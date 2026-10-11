@@ -8,10 +8,11 @@ import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import Column as SAColumn
+from sqlalchemy import MetaData, Table, and_, create_engine, delete, insert, inspect, select, text, update
 from sqlalchemy.engine import Connection, Dialect
 from sqlalchemy.exc import DBAPIError, NoSuchModuleError, SAWarning
 from sqlalchemy.types import TypeEngine
@@ -32,6 +33,34 @@ class ConnectError(Exception):
 
 class QueryError(Exception):
     """The database rejected a query."""
+
+
+class WritesNotAllowed(Exception):
+    """The connection isn't marked allow_writes."""
+
+
+class NoMatchingRow(Exception):
+    """An update or delete found no row with the given key."""
+
+
+@dataclass
+class RowFailure:
+    line: int  # the spreadsheet row
+    cells: list[str]
+    error: str
+
+
+@dataclass
+class ImportReport:
+    inserted: int = 0
+    updated: int = 0
+    deleted: int = 0
+    failures: list[RowFailure] = field(default_factory=list)
+    stopped: str | None = None  # why the import gave up early, if it did
+
+    @property
+    def written(self) -> int:
+        return self.inserted + self.updated + self.deleted
 
 
 AUTH_ERROR = re.compile(r"password|authentication|access denied|login failed|ORA-01017", re.IGNORECASE)
@@ -108,6 +137,13 @@ class QueryResult:
 
 
 MAX_ROWS = 10_000
+
+# Where one failed statement spoils the whole transaction (PostgreSQL) or might,
+# each imported row gets a savepoint. SQLite only undoes the failed statement.
+# DuckDB has no savepoints, so its rows are committed one at a time.
+SAVEPOINT_DIALECTS = {"postgresql", "mysql", "mariadb", "mssql", "oracle"}
+COMMIT_EACH_ROW = {"duckdb"}
+GIVE_UP_AFTER = 10  # failures in a row, before anything succeeded
 
 # Statements that make the transaction (or, for SQLite, the connection)
 # refuse writes. SQL Server and DuckDB have none; the read-only check and the
@@ -320,6 +356,71 @@ class Database:
             sql, columns, [tuple(row) for row in rows[:max_rows]], len(rows) > max_rows, time.perf_counter() - started
         )
 
+    def import_columns(self, rel: Relation):
+        """What the importer needs to know about each column."""
+        from .importing import ColumnInfo
+
+        insp = self._inspect()
+        raw_columns = insp.get_columns(rel.name, schema=rel.schema)
+        pk = set(insp.get_pk_constraint(rel.name, schema=rel.schema).get("constrained_columns") or [])
+        integer_pk = len(pk) == 1
+        columns = []
+        for raw in raw_columns:
+            default = str(raw.get("default") or "")
+            generated = (
+                raw.get("autoincrement") is True
+                or bool(raw.get("identity"))
+                or "nextval(" in default
+                or (integer_pk and raw["name"] in pk and self.engine.dialect.name == "sqlite" and _type_name(raw["type"], self.engine.dialect).upper() == "INTEGER")
+            )
+            columns.append(
+                ColumnInfo(
+                    name=raw["name"],
+                    type=raw["type"],
+                    type_name=raw.get("display_type") or _type_name(raw["type"], self.engine.dialect),
+                    nullable=bool(raw["nullable"]) and raw["name"] not in pk,
+                    has_default=generated or raw.get("default") is not None,
+                    primary_key=raw["name"] in pk,
+                    generated=generated,
+                )
+            )
+        return columns
+
+    def write_rows(self, rel: Relation, operation: str, key: list[str], rows, progress=None) -> ImportReport:
+        """Insert, update, upsert or delete planned rows one by one, skipping the ones that fail."""
+        if not self.target.allow_writes:
+            raise WritesNotAllowed("This connection doesn't allow writes.")
+        table = Table(rel.name, MetaData(), *[SAColumn(c.name, c.type) for c in self.import_columns(rel)], schema=rel.schema)
+        dialect = dialect_name(self.engine.dialect)
+        report = ImportReport()
+        failed_in_a_row = 0
+        with self.engine.connect() as conn:
+            for done, row in enumerate(rows, start=1):
+                try:
+                    if dialect in SAVEPOINT_DIALECTS:
+                        with conn.begin_nested():
+                            outcome = _write_row(conn, table, operation, key, row.values)
+                    else:
+                        outcome = _write_row(conn, table, operation, key, row.values)
+                        if dialect in COMMIT_EACH_ROW:
+                            conn.commit()
+                except (DBAPIError, NoMatchingRow) as exc:
+                    if dialect in COMMIT_EACH_ROW:
+                        conn.rollback()
+                    error = str(exc.orig).strip() if isinstance(exc, DBAPIError) else str(exc)
+                    report.failures.append(RowFailure(row.line, row.cells, error.splitlines()[0]))
+                    failed_in_a_row += 1
+                    if failed_in_a_row >= GIVE_UP_AFTER and report.written == 0:
+                        report.stopped = f"Stopped after the first {GIVE_UP_AFTER} rows all failed: {report.failures[-1].error}"
+                        break
+                else:
+                    setattr(report, outcome, getattr(report, outcome) + 1)
+                    failed_in_a_row = 0
+                if progress is not None:
+                    progress(done)
+            conn.commit()
+        return report
+
     def fetch_row(self, rel: Relation, where: dict[str, object]) -> tuple[list[str], tuple] | None:
         """The first row of `rel` whose columns equal `where`, as (columns, values)."""
         with self._read_only() as conn:
@@ -516,3 +617,28 @@ def _missing_driver_message(backend: str, exc: Exception) -> str:
     extra = DRIVER_EXTRAS.get(backend)
     hint = f" Install it with: pip install 'udb-inspector[{extra}]'" if extra else ""
     return f"The {backend} driver isn't installed ({exc}).{hint}"
+
+
+def _write_row(conn: Connection, table: Table, operation: str, key: list[str], values: dict[str, object]) -> str:
+    """One row; returns which counter it adds to."""
+    if operation == "insert":
+        conn.execute(insert(table).values(**values))
+        return "inserted"
+    match = and_(*(table.c[column] == values[column] for column in key))
+    described = ", ".join(f"{column} = {values[column]!r}" for column in key)
+    if operation == "delete":
+        if conn.execute(delete(table).where(match)).rowcount == 0:
+            raise NoMatchingRow(f"No row with {described}.")
+        return "deleted"
+    changes = {column: value for column, value in values.items() if column not in key}
+    if changes and conn.execute(update(table).where(match).values(**changes)).rowcount > 0:
+        return "updated"
+    if operation == "update":
+        if changes:
+            raise NoMatchingRow(f"No row with {described}.")
+        return "updated"
+    # Upsert: the update matched nothing (or there was nothing to change).
+    if not changes and conn.execute(select(1).select_from(table).where(match)).first() is not None:
+        return "updated"
+    conn.execute(insert(table).values(**values))
+    return "inserted"

@@ -18,6 +18,7 @@ from ..database import ConnectError, Database, ForeignKey, Relation, ServerInfo,
 from ..detect import DetectionError, Target
 from ..render import connection_table, table_details
 from ..settings import load_settings
+from .importer import ImportPanel
 from .query import QueryPanel
 from .record import RecordScreen
 from .screens import ConnectionForm, ConnectionsScreen, PasswordScreen, ThemeScreen, key_hints
@@ -63,11 +64,12 @@ class InspectorApp(App):
         Binding("ctrl+down", "focus_pane('results')", "Results", priority=True, show=False),
         Binding("f2", "schema", "Schema"),
         Binding("f3,e", "query", "Query"),
+        Binding("f4", "import_tab", "Import"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
     NEEDS_DATABASE = {
         "focus_filter", "focus_tree", "focus_tables", "focus_pane", "schema", "show_connection", "reload", "clear_filter", "query",
-        "select_rows",
+        "select_rows", "import_tab",
     }
 
     def __init__(self, target: Target | None = None, error: str | None = None, cwd: Path | None = None):
@@ -96,6 +98,8 @@ class InspectorApp(App):
                         yield Static(id="details")
                 with TabPane("Query", id="query-tab"):
                     yield QueryPanel(id="query")
+                with TabPane("Import", id="import-tab"):
+                    yield ImportPanel(id="import")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -136,6 +140,22 @@ class InspectorApp(App):
     def query_panel(self) -> QueryPanel:
         return self.query_one(QueryPanel)
 
+    @property
+    def import_panel(self) -> ImportPanel:
+        return self.query_one(ImportPanel)
+
+    def action_import_tab(self) -> None:
+        self._show_tab("import-tab")
+        self._sync_import_tables()
+        node = self.tree.cursor_node
+        if node is not None and isinstance(node.data, Relation) and node.data.kind == "table":
+            self.import_panel.choose(node.data)
+        self.import_panel.query_one("#paste").focus()
+
+    def _sync_import_tables(self) -> None:
+        relations = [rel for schema in self.schemas for rel in self.relations.get(schema, [])]
+        self.import_panel.set_relations(relations, self.info.default_schema if self.info else None)
+
     def _show_tab(self, tab: str) -> None:
         self.query_one(TabbedContent).active = tab
 
@@ -163,6 +183,8 @@ class InspectorApp(App):
         tabs = self.query_one(TabbedContent)
         if pane == "tables":
             self.tree.focus()
+        elif pane == "main" and tabs.active == "import-tab":
+            self.import_panel.query_one("#paste").focus()
         elif pane == "editor" or (pane == "main" and tabs.active == "query-tab" and not self.query_panel.result):
             self.action_query()
         elif pane == "results" or pane == "main" and tabs.active == "query-tab":
@@ -175,7 +197,11 @@ class InspectorApp(App):
         # Clicking a tab focuses the tab bar, which has no keys of its own, so the
         # footer would go quiet. Focus what the tab is for instead.
         inside_query = self.focused is not None and self.query_panel in self.focused.ancestors_with_self
-        if event.tabbed_content.active == "query-tab":
+        if event.tabbed_content.active == "import-tab":
+            self._sync_import_tables()
+            if self.focused is None or self.import_panel not in self.focused.ancestors_with_self:
+                self.import_panel.query_one("#paste").focus()
+        elif event.tabbed_content.active == "query-tab":
             if not inside_query:
                 self.query_panel.editor.focus()
         elif inside_query or self.focused is None or isinstance(self.focused, Tabs):
@@ -270,6 +296,7 @@ class InspectorApp(App):
         self._set_sub_title()
         self.tree.root.set_label(self._root_label())
         self.query_panel.reset()
+        self.import_panel.reset()
         self.refresh_bindings()
         self.action_reload()
 

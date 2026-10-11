@@ -144,3 +144,58 @@ ModalScreen {
 #record {
     height: 1fr;
 }
+
+ImportPanel {
+    height: 1fr;
+    padding: 0 1;
+}
+
+ImportPanel .import-bar {
+    height: auto;
+    margin-top: 1;
+}
+
+ImportPanel .import-label {
+    margin: 0 1 0 2;
+    color: $text-muted;
+}
+
+ImportPanel .import-bar Button {
+    margin-right: 2;
+}
+
+#import-table {
+    width: 30;
+}
+
+#import-op {
+    width: 42;
+}
+
+#import-key {
+    width: 26;
+}
+
+#import-lock {
+    width: 1fr;
+}
+
+#paste {
+    height: 8;
+    margin-top: 1;
+}
+
+#import-summary, #import-result {
+    height: auto;
+    margin-top: 1;
+}
+
+#import-preview {
+    height: 1fr;
+    min-height: 5;
+}
+
+#import-failures {
+    height: auto;
+    max-height: 10;
+}

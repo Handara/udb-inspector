@@ -74,6 +74,7 @@ connection chooser.
 | --- | --- |
 | `F2` | Schema tab, with the tables focused |
 | `F3`, `e` | Query tab, with the editor focused |
+| `F4` | Import tab, for the highlighted table |
 | `ctrl+←` `ctrl+→` | Move to the tables sidebar / back to the main area, from anywhere (`ctrl+t` also goes to the tables) |
 | `ctrl+↑` `ctrl+↓` | Move to the query editor / the results |
 | `s` | Query the highlighted table (`SELECT * FROM …`) |
@@ -159,6 +160,36 @@ rows. And it warns about common mistakes: a comma right before `FROM`, a table
 joined to itself without aliases, a `JOIN` without `ON`, `= NULL`, the
 `NOT IN (SELECT …)` NULL trap, `FULL JOIN` on MySQL, and selected columns that
 are neither grouped nor aggregated.
+
+### Import
+
+`F4` opens the Import tab. Pick the table and what to do with the rows:
+insert, update (matched by a key column, the primary key unless you pick
+another), upsert (update, or insert when the key isn't there) or delete. Then
+paste rows copied from Excel or any spreadsheet (CSV text works too). The
+first row has to be the column names; they match the table's columns
+ignoring case, spaces and underscores, and other columns are ignored.
+
+- **Copy template** puts the column names on the clipboard, ready to paste into
+  Excel's first row. **Save template as .xlsx** writes them to a file where each
+  header has a note on its type and whether it's required, and date columns are
+  formatted as text so Excel doesn't change them. Templates leave out
+  auto-numbered ids for inserts, and put the key first for the other operations.
+- The preview shows each value as it will be written, and the rows that can't
+  be, with their spreadsheet row number and why. Those rows are skipped.
+- Importing asks for confirmation with the row count. Each row is written on
+  its own (in a savepoint, on databases where one failure would spoil the
+  whole transaction), so a row the database rejects is skipped and the rest
+  are written. If the first 10 rows all fail, the import stops.
+- **Copy failed rows** copies them with an `error` column. Fix them in Excel and
+  paste them back; the `error` column is ignored.
+
+Values: empty cells and `NULL` become NULL (or the column's default, on
+insert); numbers may use thousands commas (`1,234.50`); booleans are
+true/false, yes/no or 1/0; dates are `YYYY-MM-DD` (or `YYYY/MM/DD`), with an
+optional time (`HH:MM`); JSON columns take JSON; binary columns take hex.
+
+Import needs a connection that allows writes (see Connections).
 
 Queries are read-only. Each statement is checked before it runs, and anything
 that writes (including a `DELETE` inside a `WITH`, `SELECT … INTO` and
