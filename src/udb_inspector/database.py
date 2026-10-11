@@ -170,12 +170,21 @@ class Database:
             raise ConnectError(_missing_driver_message(url.get_backend_name(), exc)) from None
         # schema -> {(ref_schema, ref_table): foreign keys pointing at it}
         self._incoming_fks: dict[str, dict[tuple[str, str], list[ForeignKey]]] = {}
+        self._columns: dict[Relation, list[tuple[str, str]]] = {}
 
     def close(self) -> None:
         self.engine.dispose()
 
     def clear_cache(self) -> None:
         self._incoming_fks.clear()
+        self._columns.clear()
+
+    def column_names(self, rel: Relation) -> list[tuple[str, str]]:
+        """(name, type) of each column; cheaper than describe(), for completions."""
+        if rel not in self._columns:
+            raw = inspect(self.engine).get_columns(rel.name, schema=rel.schema)
+            self._columns[rel] = [(column["name"], _type_name(column["type"], self.engine.dialect)) for column in raw]
+        return self._columns[rel]
 
     def server_info(self) -> ServerInfo:
         try:

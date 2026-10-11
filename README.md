@@ -84,6 +84,25 @@ selected text. Results show up to 10,000 rows in a grid:
 | click a header | Sort by that column; again to reverse. NULLs stay last |
 | `enter` | Show the cell in full, with JSON pretty-printed; `c` copies it |
 
+As you type, the bar under the editor suggests what fits at the cursor, the
+way Salesforce Inspector does: statement keywords at the start, tables after
+`FROM` and `JOIN`, the columns (with their types) of the tables in the
+statement, `alias.` for one table's columns, then functions and keywords for
+the connected database, such as `LIMIT` for PostgreSQL and `TOP` or
+`OFFSET … FETCH NEXT` for SQL Server.
+
+| Key | Action |
+| --- | --- |
+| `tab` | Insert the highlighted suggestion (indents when there is none) |
+| `ctrl+n` `ctrl+p` | Highlight the next / previous suggestion |
+| `esc` | Hide the suggestions; again to leave the editor |
+| `F1` | Cheat sheet for the connected database: limiting rows, paging, quoting, dates, text, catalog queries |
+
+The bar also warns about syntax from other databases (`LIMIT` on SQL Server,
+`||` on MySQL, `"bob"` meaning a column in PostgreSQL, `NOW()` on SQL Server,
+`IFNULL` outside MySQL and SQLite, …) and, after a short pause in typing,
+about syntax errors.
+
 Queries are read-only. Each statement is checked before it runs, and anything
 that writes (including a `DELETE` inside a `WITH`, `SELECT … INTO` and
 `EXPLAIN ANALYZE` of a write) is refused. On top of that the transaction is

@@ -40,6 +40,7 @@ QueryPanel {
 
 #hints {
     color: $text-muted;
+    min-height: 2;
 }
 
 #result-bar {

@@ -6,16 +6,19 @@ import datetime
 import json
 from decimal import Decimal
 
+from rich.console import Group
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Input, Label, Select, Static, TextArea
 
-from ..database import QueryError, QueryResult
-from ..sql import ReadOnlyError, sqlglot_dialect, statement_at
+from ..database import QueryError, QueryResult, Relation
+from ..hints import PRODUCTS, Context, Suggestion, TableRef, cheat_sheet, context_at, notes, suggest
+from ..sql import ReadOnlyError, sqlglot_dialect, statement_at, syntax_problem
 from .screens import key_hints
 
 PAGE_SIZES = [("25 rows", "25"), ("50 rows", "50"), ("100 rows", "100"), ("250 rows", "250"), ("1000 rows", "1000"), ("All rows", "all")]
@@ -23,12 +26,58 @@ CELL_WIDTH = 60  # longer values are cut in the grid; enter shows them in full
 
 
 class QueryEditor(TextArea):
-    pass
+    """SQL editor that can insert the hint bar's highlighted suggestion."""
+
+    BINDINGS = [
+        # priority: checked before TextArea's own tab handling; when there is
+        # nothing to accept, check_action turns it off and tab indents as usual.
+        Binding("tab", "accept", "Insert suggestion", show=False, priority=True),
+        Binding("ctrl+n", "choose(1)", "Next suggestion", show=False),
+        Binding("ctrl+p", "choose(-1)", "Previous suggestion", show=False),
+        # priority too: TextArea's own escape moves focus on before bindings run.
+        Binding("escape", "dismiss", "Hide suggestions", show=False, priority=True),
+    ]
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.suggestions: list[Suggestion] = []
+        self.chosen = 0
+        self.context = Context("none")
+        self.dismissed = False
+
+    @property
+    def can_accept(self) -> bool:
+        context = self.context
+        return bool(self.suggestions) and not self.dismissed and bool(context.prefix or context.qualifier or context.kind == "table")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "accept":
+            return self.can_accept
+        if action in ("choose", "dismiss"):
+            return bool(self.suggestions) and not self.dismissed
+        return super().check_action(action, parameters)
+
+    def action_accept(self) -> None:
+        suggestion = self.suggestions[self.chosen]
+        row, column = self.cursor_location
+        self.replace(suggestion.text, (row, column - len(self.context.prefix)), (row, column))
+
+    def action_choose(self, step: int) -> None:
+        self.chosen = (self.chosen + step) % len(self.suggestions)
+        self.post_message(self.SuggestionsChanged())
+
+    def action_dismiss(self) -> None:
+        self.dismissed = True
+        self.post_message(self.SuggestionsChanged())
+
+    class SuggestionsChanged(Message):
+        pass
 
 
 class QueryPanel(Vertical):
     BINDINGS = [
         Binding("ctrl+r,f5,ctrl+enter", "run", "Run"),
+        Binding("f1", "cheat_sheet", "Cheat sheet"),
         Binding("left_square_bracket", "page(-1)", "Previous page", show=False),
         Binding("right_square_bracket", "page(1)", "Next page", show=False),
         Binding("slash", "focus_search", "Search results", show=False),
@@ -42,6 +91,11 @@ class QueryPanel(Vertical):
         self.page_size: int | None = 50  # None: all rows
         self.sort: tuple[int, bool] | None = None  # (column, descending)
         self._haystack: list[str] | None = None
+        self._columns: dict[Relation, list[tuple[str, str]]] = {}
+        self._loading: set[Relation] = set()
+        self._notes: list[str] = []
+        self._syntax: str | None = None
+        self._syntax_timer = None
 
     def compose(self) -> ComposeResult:
         yield QueryEditor.code_editor("", language="sql", id="editor", show_line_numbers=True)
@@ -62,11 +116,135 @@ class QueryPanel(Vertical):
         return self.query_one(DataTable)
 
     def _default_hints(self) -> Text:
-        return key_hints(("ctrl+r", "run the statement under the cursor"), ("e", "editor"), ("esc", "leave the editor"))
+        return key_hints(("ctrl+r", "run the statement under the cursor"), ("f1", "cheat sheet"), ("esc", "leave the editor"))
+
+    # Hints
+
+    @on(TextArea.Changed, "#editor")
+    @on(TextArea.SelectionChanged, "#editor")
+    def _editor_changed(self, event) -> None:
+        editor = self.editor
+        if isinstance(event, TextArea.Changed):
+            editor.dismissed = False
+            self._syntax = None
+            if self._syntax_timer is not None:
+                self._syntax_timer.stop()
+            self._syntax_timer = self.set_timer(0.6, self._check_syntax)
+        self._refresh_suggestions()
+
+    @on(QueryEditor.SuggestionsChanged)
+    def _suggestions_changed(self) -> None:
+        self._render_hints()
+
+    def _refresh_suggestions(self) -> None:
+        info, db = self.app.info, self.app.db
+        if info is None or db is None:
+            return
+        editor = self.editor
+        offset = editor.document.get_index_from_location(editor.cursor_location)
+        context = context_at(editor.text, offset, info.dialect)
+        previous = [s.label for s in editor.suggestions]
+        editor.context = context
+        editor.suggestions = suggest(
+            context, info.dialect, self._tables(), self._columns_for, db.engine.dialect.identifier_preparer.quote
+        )[:50]
+        if [s.label for s in editor.suggestions] != previous:
+            editor.chosen = 0
+        statement = statement_at(editor.text, offset, sqlglot_dialect(info.dialect))
+        self._notes = notes(statement, info.dialect)
+        self._render_hints()
+
+    def _tables(self) -> list[tuple[str, str, str]]:
+        default = self.app.info.default_schema
+        return [
+            ("" if schema == default else schema, rel.name, rel.kind)
+            for schema, relations in self.app.relations.items()
+            for rel in relations
+        ]
+
+    def _columns_for(self, ref: TableRef) -> list[tuple[str, str]] | None:
+        rel = self._resolve(ref)
+        if rel is None:
+            return []  # a CTE or a table we don't know
+        if rel in self._columns:
+            return self._columns[rel]
+        if rel not in self._loading:
+            self._loading.add(rel)
+            self._load_columns(rel)
+        return None
+
+    def _resolve(self, ref: TableRef) -> Relation | None:
+        schemas = [ref.schema] if ref.schema else [self.app.info.default_schema, *self.app.relations]
+        for schema in schemas:
+            for rel in self.app.relations.get(schema, []):
+                if rel.name.lower() == ref.name.lower():
+                    return rel
+        return None
+
+    @work(thread=True, group="columns")
+    def _load_columns(self, rel: Relation) -> None:
+        try:
+            columns = self.app.db.column_names(rel)
+        except Exception:
+            columns = []
+        self.app.call_from_thread(self._columns_loaded, rel, columns)
+
+    def _columns_loaded(self, rel: Relation, columns: list[tuple[str, str]]) -> None:
+        self._columns[rel] = columns
+        self._loading.discard(rel)
+        self._refresh_suggestions()
+
+    def _check_syntax(self) -> None:
+        if self.app.info is None:
+            return
+        editor = self.editor
+        offset = editor.document.get_index_from_location(editor.cursor_location)
+        statement = statement_at(editor.text, offset, sqlglot_dialect(self.app.info.dialect))
+        self._syntax = syntax_problem(statement, self.app.info.dialect)
+        self._render_hints()
+
+    def _render_hints(self) -> None:
+        editor = self.editor
+        context = editor.context
+        lines: list[Text] = []
+        if editor.suggestions and not editor.dismissed:
+            heading = {
+                "table": "Tables",
+                "statement": "Start with",
+            }.get(context.kind, f"Columns of {context.qualifier}" if context.qualifier else "Suggestions")
+            line = Text(f"{heading}:  ", style="dim", no_wrap=True, overflow="ellipsis")
+            start = max(0, min(editor.chosen - 2, len(editor.suggestions) - 8))
+            for index, item in enumerate(editor.suggestions[start : start + 8], start):
+                if index > start:
+                    line.append("  |  ", style="dim")
+                style = "reverse bold" if index == editor.chosen else ""
+                line.append(item.label, style=style)
+                if item.detail or item.kind in ("table", "view") and context.kind != "table":
+                    line.append(f" {item.detail or item.kind}", style="dim")
+            if len(editor.suggestions) > start + 8:
+                line.append(f"  +{len(editor.suggestions) - start - 8}", style="dim")
+            lines.append(line)
+        elif context.kind == "column" and not context.scope and editor.text.strip():
+            lines.append(Text("Name a table after FROM to get its columns.", style="dim"))
+        if self._notes:
+            lines.append(Text("⚠ " + self._notes[0], style="yellow"))
+        elif self._syntax:
+            lines.append(Text("⚠ " + self._syntax, style="yellow"))
+        if editor.can_accept:
+            lines.append(key_hints(("tab", "insert"), ("ctrl+n ctrl+p", "choose"), ("esc", "hide"), ("f1", "cheat sheet")))
+        if not lines:
+            lines.append(self._default_hints())
+        self.query_one("#hints", Static).update(Group(*lines[:2]))  # a Group keeps each line's no_wrap
+
+    def action_cheat_sheet(self) -> None:
+        if self.app.info is not None:
+            self.app.push_screen(CheatSheetScreen(self.app.info.dialect))
 
     def reset(self) -> None:
-        """Forget the results of the previous connection."""
+        """Forget the results and cached columns of the previous connection."""
         self.result, self.view, self.sort, self._haystack = None, [], None, None
+        self._columns.clear()
+        self._loading.clear()
         self.grid.clear(columns=True)
         self.query_one("#status", Static).update("")
         self.query_one("#pager", Static).update("")
@@ -216,6 +394,30 @@ class QueryPanel(Vertical):
 
     def _set_status(self, text: Text) -> None:
         self.query_one("#status", Static).update(text)
+
+
+class CheatSheetScreen(ModalScreen[None]):
+    BINDINGS = [Binding("escape,f1", "close", "Close")]
+
+    def __init__(self, dialect: str):
+        super().__init__()
+        self.dialect = dialect
+
+    def compose(self) -> ComposeResult:
+        from rich.table import Table
+
+        table = Table(box=None, show_header=False, padding=(0, 2, 0, 0))
+        table.add_column(style="dim")
+        table.add_column(style="bold")
+        for topic, snippet in cheat_sheet(self.dialect):
+            table.add_row(topic, snippet)
+        with Vertical(classes="dialog"):
+            yield Label(f"{PRODUCTS.get(self.dialect, self.dialect)} cheat sheet", classes="title", markup=False)
+            yield Static(table)
+            yield Label(key_hints(("esc", "close")), classes="hint")
+
+    def action_close(self) -> None:
+        self.dismiss()
 
 
 class CellScreen(ModalScreen[None]):
