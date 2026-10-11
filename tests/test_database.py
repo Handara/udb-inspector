@@ -105,3 +105,12 @@ def test_referenced_by(sample_db):
     incoming = db.referenced_by(Relation("main", "users", "table"))
     assert [(fk.table, fk.columns) for fk in incoming] == [("orders", ("user_id",))]
     assert db.referenced_by(Relation("main", "orders", "table")) == []
+
+
+def test_duckdb_reports_its_own_version(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    pytest.importorskip("duckdb_engine")
+    path = tmp_path / "x.duckdb"
+    duckdb.connect(str(path)).close()
+    info = Database(detect(str(path))).server_info()
+    assert (info.product, info.version, info.banner) == ("DuckDB", duckdb.__version__, None)

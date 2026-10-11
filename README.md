@@ -5,7 +5,24 @@ a database, it works out what it is, and you browse it from a sidebar.
 
 ## Install
 
-From this folder, install `udbi` as a command with [pipx](https://pipx.pypa.io):
+### Standalone executable (no Python needed)
+
+`udbi` can be built as a single file that carries its own Python and the
+drivers for SQLite, PostgreSQL, MySQL/MariaDB, Oracle and DuckDB:
+
+```sh
+python3 scripts/build_binary.py             # writes dist/udbi (about 60 MB)
+python3 scripts/build_binary.py --install   # and copies it to ~/.local/bin/udbi
+```
+
+The build makes its own virtualenv in `build/`; the result doesn't need one,
+or Python at all. It runs on the OS and CPU it was built on, and on Linux needs
+a glibc at least as new as the build machine's. SQL Server isn't included: it
+needs Microsoft's ODBC driver on the machine, so use the Python install below.
+
+### With Python
+
+From this folder, with [pipx](https://pipx.pypa.io):
 
 ```sh
 pipx install --editable ".[postgres]"   # or mysql, mssql, oracle, duckdb, all; SQLite needs no extra
@@ -14,7 +31,7 @@ pipx install --editable ".[postgres]"   # or mysql, mssql, oracle, duckdb, all; 
 `--editable` means new commits take effect without reinstalling. To add a
 driver later: `pipx install --force --editable ".[postgres,mysql]"`.
 
-For working on udbi itself:
+### For working on udbi itself
 
 ```sh
 python -m venv .venv && . .venv/bin/activate

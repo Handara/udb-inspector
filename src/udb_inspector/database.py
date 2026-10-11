@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,10 +157,13 @@ class Database:
             raise ConnectError(f"Can't connect to {self.target.display_url}: {exc.orig}") from None
         except ModuleNotFoundError as exc:  # some dialects import their driver lazily
             raise ConnectError(_missing_driver_message(dialect_name(self.engine.dialect), exc)) from None
-        version_info = dialect.server_version_info or ()
+        version = ".".join(str(part) for part in dialect.server_version_info or ())
+        if dialect.name == "duckdb" and banner:
+            # duckdb_engine reports its Postgres-compatibility version; the real one is in version().
+            version, banner = banner.removeprefix("v"), None
         return ServerInfo(
             product=_product(dialect, banner),
-            version=".".join(str(part) for part in version_info),
+            version=version,
             banner=banner,
             dialect=dialect_name(dialect),
             driver=dialect.driver,
@@ -346,6 +350,9 @@ def _product(dialect: Dialect, banner: str | None) -> str:
 
 
 def _missing_driver_message(backend: str, exc: Exception) -> str:
+    if getattr(sys, "frozen", False):  # the standalone executable can't install anything
+        hint = " SQL Server needs the Python version of udbi plus Microsoft's ODBC driver." if backend == "mssql" else ""
+        return f"This udbi build doesn't include the {backend} driver ({exc}).{hint}"
     extra = DRIVER_EXTRAS.get(backend)
     hint = f" Install it with: pip install 'udb-inspector[{extra}]'" if extra else ""
     return f"The {backend} driver isn't installed ({exc}).{hint}"
