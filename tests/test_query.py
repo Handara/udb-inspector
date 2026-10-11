@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 
 import pytest
-from textual.widgets import DataTable, Input, Select
+from textual.widgets import DataTable, Input
 
 from udb_inspector.database import Database, QueryError
 from udb_inspector.detect import detect
@@ -125,6 +125,13 @@ async def settle(pilot):
         await pilot.pause()
 
 
+async def set_limit(app, pilot, value):
+    field = app.query_panel.query_one("#limit", Input)
+    field.value = value
+    field.post_message(Input.Submitted(field, value))  # as if enter was pressed in it
+    await settle(pilot)
+
+
 def grid_rows(app):
     grid = app.query_one(DataTable)
     return [[str(grid.get_cell_at((row, col))) for col in range(len(grid.columns))] for row in range(grid.row_count)]
@@ -175,9 +182,8 @@ def test_s_selects_the_highlighted_table_with_pages(items_db):
         await pilot.press("left_square_bracket")
         assert "page 2 of 3" in text_of(app, "#pager")
 
-        panel.query_one("#page-size", Select).value = "all"
-        await pilot.pause()
-        assert len(grid_rows(app)) == 120
+        await set_limit(app, pilot, "200")  # OFFSET stays at 50: rows 51 to 120
+        assert len(grid_rows(app)) == 70 and grid_rows(app)[0][0] == "51"
 
     run(app, scenario)
 
@@ -210,8 +216,7 @@ def test_search_and_sort(items_db):
         assert "price ▼" in str(columns[2].label) or "price ▼" in str(list(grid.columns.values())[2].label)
         prices = [row[2] for row in grid_rows(app)]
         assert prices[0] == "178.5"  # item 120 has no price, so 119 * 1.5 is the largest
-        panel.query_one("#page-size", Select).value = "all"
-        await settle(pilot)
+        await set_limit(app, pilot, "200")
         prices = [row[2] for row in grid_rows(app)]
         assert prices[-12:] == ["NULL"] * 12  # NULLs stay last when descending
 
@@ -323,7 +328,7 @@ def test_paging_in_the_tab(items_db):
         assert grid_rows(app)[0][0] == "101" and "Rows 101–120 of 120  |  page 3 of 3" in text_of(app, "#pager")
         await pilot.press("right_square_bracket")  # no page 4
         await settle(pilot)
-        assert panel.page == 2
+        assert panel.row_offset == 100
 
     run(app, scenario)
 
@@ -347,5 +352,66 @@ def test_statements_that_cant_be_paged_are_fetched_whole(items_db, monkeypatch):
         await pilot.press("ctrl+r")
         await settle(pilot)
         assert not app.query_panel.paged and "120 rows" in text_of(app, "#status")  # run as typed instead
+
+    run(app, scenario)
+
+
+
+def test_the_rows_to_show_panel(items_db):
+    app = InspectorApp(detect(str(items_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("down", "s")
+        await settle(pilot)
+        panel = app.query_panel
+        paging = lambda name: panel.query_one(f"#{name}", Input).value  # noqa: E731
+        assert "reads 50 rows at a time by adding LIMIT/OFFSET" in text_of(app, "#paging-note")
+        assert text_of(app, "#paging-sql") == "Sent: SELECT * FROM items LIMIT 51"
+        assert str(panel.query_one("#page-count").content) == "of 3"
+
+        await pilot.press("right_square_bracket")  # paging moves OFFSET by LIMIT
+        await settle(pilot)
+        assert (paging("offset"), paging("page-number")) == ("50", "2")
+        assert text_of(app, "#paging-sql") == "Sent: SELECT * FROM items LIMIT 51 OFFSET 50"
+
+        field = panel.query_one("#offset", Input)
+        field.value = "7"
+        field.post_message(Input.Submitted(field, "7"))  # any row can start the page
+        await settle(pilot)
+        assert grid_rows(app)[0][0] == "8" and paging("page-number") == "1"
+
+        field = panel.query_one("#page-number", Input)
+        field.value = "3"
+        field.post_message(Input.Submitted(field, "3"))  # a page number sets OFFSET
+        await settle(pilot)
+        assert paging("offset") == "100" and grid_rows(app)[0][0] == "101"
+
+        await set_limit(app, pilot, "30")  # LIMIT is the page size
+        assert len(grid_rows(app)) == 20 and str(panel.query_one("#page-count").content) == "of 4"
+        await set_limit(app, pilot, "0")
+        assert "LIMIT goes from 1 to 10,000" in text_of(app, "#paging-note")
+
+        panel.editor.text = "SELECT * FROM items LIMIT 10"
+        await pilot.press("ctrl+up", "ctrl+r")
+        await settle(pilot)
+        assert "Its own LIMIT still applies" in text_of(app, "#paging-note")
+
+    run(app, scenario)
+
+
+def test_unpaged_statements_say_so(items_db):
+    app = InspectorApp(detect(str(items_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("e")
+        app.query_panel.editor.text = "PRAGMA table_info(items)"
+        await pilot.press("ctrl+r")
+        await settle(pilot)
+        assert "can't be paged, so it ran as typed" in text_of(app, "#paging-note")
+        assert text_of(app, "#paging-sql") == "Sent: PRAGMA table_info(items)"
+        await set_limit(app, pilot, "3")
+        assert len(grid_rows(app)) == 3  # LIMIT still pages through what was fetched
 
     run(app, scenario)

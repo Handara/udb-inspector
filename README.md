@@ -102,13 +102,16 @@ Results come one page at a time: each page is its own query, with `LIMIT` and
 `OFFSET` (or `TOP` / `OFFSET … FETCH` on SQL Server and Oracle) added to yours,
 so the first page of a huge table is quick and nothing waits for the whole
 result. Sorting and searching happen in the database too, over every row, and
-the total is counted in the background. Statements that can't be paged
+the total is counted in the background. The **Rows to show** panel next to
+the editor shows what udbi adds and the exact SQL it sent; type a LIMIT (the
+page size, up to 10,000), an OFFSET (the first row) or a page number, and the
+others follow. Statements that can't be paged
 (`SHOW`, `EXPLAIN`, `PRAGMA`, …), or a rewritten query the database rejects,
 are run as typed and show their first 10,000 rows.
 
 | Key | Action |
 | --- | --- |
-| `[` `]` | Previous / next page; the page size is picked next to the search box |
+| `[` `]` | Previous / next page: moves OFFSET by LIMIT |
 | `/` | Search every column of every row, ignoring case (runs once you pause typing, or on enter) |
 | click a header | Sort the whole result by that column; again to reverse. NULLs stay last |
 | `enter` | Show the cell in full, with JSON pretty-printed; `c` copies it |

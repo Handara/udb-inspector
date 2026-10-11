@@ -142,6 +142,7 @@ class Page:
     rows: list[tuple]
     has_more: bool  # rows exist after this page
     elapsed: float  # seconds
+    sql: str = ""  # what was sent: the query with paging (and any sort and search) added
 
 
 MAX_ROWS = 10_000
@@ -480,7 +481,7 @@ class Database:
                 columns, rows = list(result.keys()), result.fetchall()
             except DBAPIError as exc:
                 raise QueryError(str(exc.orig).strip()) from None
-        return Page(columns, [tuple(row) for row in rows[:limit]], len(rows) > limit, time.perf_counter() - started)
+        return Page(columns, [tuple(row) for row in rows[:limit]], len(rows) > limit, time.perf_counter() - started, paged)
 
     def count_matching(self, sql: str, *, search: str = "", columns: list[str] = ()) -> int | None:
         """How many rows the query returns (with the search applied), or None if it can't be counted."""

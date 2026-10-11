@@ -29,8 +29,51 @@ QueryPanel {
     height: 1fr;
 }
 
+#editor-row {
+    height: 12;
+}
+
 #editor {
-    height: 10;
+    width: 1fr;
+    height: 100%;
+}
+
+#paging {
+    width: 44;
+    height: 100%;
+    padding: 0 1;
+}
+
+#paging .paging-title {
+    text-style: bold;
+}
+
+#paging .paging-row {
+    height: 1;
+}
+
+#paging .paging-label {
+    width: 8;
+    color: $text-muted;
+}
+
+#paging Input {
+    width: 10;
+}
+
+#page-count {
+    margin-left: 1;
+    color: $text-muted;
+}
+
+#paging-note, #paging-sql {
+    height: auto;
+    margin-top: 1;
+}
+
+#paging-sql {
+    max-height: 4;
+    color: $text-muted;
 }
 
 #suggestions {
@@ -59,10 +102,6 @@ QueryPanel {
 #search {
     width: 1fr;
     margin: 0 1;
-}
-
-#page-size {
-    width: 16;
 }
 
 #grid {

@@ -198,6 +198,12 @@ def count_query(sql: str, read: str | None, *, columns: list[str] = (), search: 
     return counted.sql(dialect=read)
 
 
+def has_own_limit(sql: str, read: str | None) -> bool:
+    """Whether the query limits its rows itself (LIMIT, TOP, OFFSET, FETCH)."""
+    query = single_query(sql, read)
+    return query is not None and _limited(query)
+
+
 def _limited(query: exp.Query) -> bool:
     return any(query.args.get(key) for key in ("limit", "offset", "fetch"))
 

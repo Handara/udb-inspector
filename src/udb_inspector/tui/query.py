@@ -34,12 +34,11 @@ from ..hints import (
     suggest,
     tables_in,
 )
-from ..sql import ReadOnlyError, sqlglot_dialect, statement_at, statement_range_at, syntax_problem
+from ..sql import ReadOnlyError, has_own_limit, sqlglot_dialect, statement_at, statement_range_at, syntax_problem
 from .record import RecordScreen
 from .screens import ConfirmScreen, form_row, key_hints
 from .values import CellScreen, cell, plain, sort_key
 
-PAGE_SIZES = [("25 rows", "25"), ("50 rows", "50"), ("100 rows", "100"), ("250 rows", "250"), ("1000 rows", "1000"), ("All rows", "all")]
 
 
 EMPTY_SELECT_LIST = re.compile(r"\s*SELECT(\s+)FROM\b", re.IGNORECASE)
@@ -161,8 +160,11 @@ class QueryPanel(Vertical):
         super().__init__(**kwargs)
         self.result: QueryResult | None = None
         self.view: list[int] = []  # result rows after search and sort
-        self.page = 0
-        self.page_size: int | None = 50  # None: all rows
+        self.row_offset = 0  # the first row shown (OFFSET)
+        self.row_limit = 50  # rows per page (LIMIT)
+        self.sent_sql = ""  # what the database was last sent for these results
+        self._request = 0  # numbers each load, so an answer that arrives late is ignored
+        self._paging_timer = None
         self.sort: tuple[int, bool] | None = None  # (column, descending)
         self._haystack: list[str] | None = None
         self._columns: dict[Relation, list[tuple[str, str]]] = {}
@@ -182,12 +184,26 @@ class QueryPanel(Vertical):
         self.has_more = False  # paged: rows exist after this page
 
     def compose(self) -> ComposeResult:
-        yield QueryEditor.code_editor("", language="sql", id="editor", show_line_numbers=True)
+        with Horizontal(id="editor-row"):
+            yield QueryEditor.code_editor("", language="sql", id="editor", show_line_numbers=True)
+            with Vertical(id="paging"):
+                yield Label("Rows to show", classes="paging-title")
+                with Horizontal(classes="paging-row"):
+                    yield Label("LIMIT", classes="paging-label")
+                    yield Input(str(self.row_limit), id="limit", restrict=r"[0-9]*", compact=True)
+                with Horizontal(classes="paging-row"):
+                    yield Label("OFFSET", classes="paging-label")
+                    yield Input("0", id="offset", restrict=r"[0-9]*", compact=True)
+                with Horizontal(classes="paging-row"):
+                    yield Label("Page", classes="paging-label")
+                    yield Input("1", id="page-number", restrict=r"[0-9]*", compact=True)
+                    yield Label("", id="page-count")
+                yield Static(id="paging-note")
+                yield Static(id="paging-sql")
         yield SuggestionList(id="suggestions")
         yield Static(self._default_hints(), id="hints")
         with Horizontal(id="result-bar"):
             yield Input(placeholder="Search results  ( / )", id="search", compact=True)
-            yield Select(PAGE_SIZES, value="50", allow_blank=False, id="page-size", compact=True)
         yield Static(id="status")
         yield DataTable(id="grid", zebra_stripes=True, cursor_type="cell")
         yield Static(id="pager")
@@ -369,6 +385,8 @@ class QueryPanel(Vertical):
         self.grid.clear(columns=True)
         self.query_one("#status", Static).update("")
         self.query_one("#pager", Static).update("")
+        self.sent_sql = ""
+        self._sync_paging()
 
     def set_sql(self, sql: str) -> None:
         self.editor.text = sql
@@ -390,24 +408,25 @@ class QueryPanel(Vertical):
         if not sql:
             self._set_status(Text("Nothing to run: write a query first.", style="dim"))
             return
-        self.sql, self.sort, self.page, self.search, self.total, self.has_more = sql, None, 0, "", None, False
+        self.sql, self.sort, self.row_offset, self.search, self.total, self.has_more = sql, None, 0, "", None, False
         self.query_one("#search", Input).value = ""  # a new query starts unsearched
         self._set_status(Text("Running…", style="dim"))
         self.grid.loading = True
         self._focus_results = focus_results  # a loading widget can't take focus yet
-        self._load(sql, True, self._page_args())
+        self._request += 1
+        self._load(sql, True, self._page_args(), self._request)
 
     def _page_args(self) -> dict:
-        size = self.page_size or MAX_ROWS
         sort = (self.columns[self.sort[0]], self.sort[1]) if self.sort is not None and self.columns else None
-        return {"offset": self.page * size, "limit": size, "sort": sort, "search": self.search, "columns": list(self.columns)}
+        return {"offset": self.row_offset, "limit": self.row_limit, "sort": sort, "search": self.search, "columns": list(self.columns)}
 
     def _reload(self) -> None:
         self.grid.loading = True
-        self._load(self.sql, False, self._page_args())
+        self._request += 1
+        self._load(self.sql, False, self._page_args(), self._request)
 
     @work(thread=True, exclusive=True, group="query")
-    def _load(self, sql: str, first: bool, args: dict) -> None:
+    def _load(self, sql: str, first: bool, args: dict, request: int) -> None:
         db = self.app.db
         try:
             try:
@@ -417,22 +436,25 @@ class QueryPanel(Vertical):
                     raise
                 page = None  # the rewritten query failed: run it as typed instead
             if page is None:
-                self.app.call_from_thread(self._show_all, db.run_query(sql, max_rows=MAX_ROWS))
+                self.app.call_from_thread(self._show_all, db.run_query(sql, max_rows=MAX_ROWS), request)
             else:
-                self.app.call_from_thread(self._show_page, sql, page, first)
+                self.app.call_from_thread(self._show_page, sql, page, first, request)
         except (ReadOnlyError, QueryError) as exc:
-            self.app.call_from_thread(self._failed, str(exc))
+            self.app.call_from_thread(self._failed, str(exc), request)
         except Exception as exc:  # a driver error we didn't anticipate
-            self.app.call_from_thread(self._failed, f"{type(exc).__name__}: {exc}")
+            self.app.call_from_thread(self._failed, f"{type(exc).__name__}: {exc}", request)
 
-    def _failed(self, message: str) -> None:
+    def _failed(self, message: str, request: int | None = None) -> None:
+        if request is not None and request != self._request:
+            return
         self.grid.loading = False
         self._set_status(Text(message, style="red"))
 
-    def _show_page(self, sql: str, page: Page, first: bool) -> None:
-        if sql != self.sql:
-            return  # an earlier query finished late
+    def _show_page(self, sql: str, page: Page, first: bool, request: int) -> None:
+        if request != self._request:
+            return  # a page that was asked for before the latest one
         self.paged = True
+        self.sent_sql = page.sql
         self.result = QueryResult(sql, page.columns, page.rows, False, page.elapsed)
         self.has_more = page.has_more
         self.view = list(range(len(page.rows)))
@@ -441,10 +463,11 @@ class QueryPanel(Vertical):
             self._count()
         self._shown()
 
-    def _show_all(self, result: QueryResult) -> None:
-        if result.sql != self.sql:
+    def _show_all(self, result: QueryResult, request: int | None = None) -> None:
+        if request is not None and request != self._request:
             return
         self.paged = False
+        self.sent_sql = result.sql
         self.result, self.columns, self._haystack = result, result.columns, None
         self._apply_view()
         self._shown()
@@ -491,7 +514,7 @@ class QueryPanel(Vertical):
 
     def _row_index(self, grid_row: int) -> int | None:
         """The index in result.rows of a row of the grid."""
-        position = grid_row if self.paged else self.page * (self.page_size or len(self.view)) + grid_row
+        position = grid_row if self.paged else self.row_offset + grid_row
         return self.view[position] if 0 <= position < len(self.view) else None
 
     def action_open_record(self) -> None:
@@ -605,18 +628,94 @@ class QueryPanel(Vertical):
         value = self.query_one("#search", Input).value.strip()
         if not self.paged or value == self.search:
             return
-        self.search, self.page = value, 0
+        self.search, self.row_offset = value, 0
         self._reload()
         self._count()
 
-    @on(Select.Changed, "#page-size")
-    def _page_size_changed(self, event: Select.Changed) -> None:
-        self.page_size = None if event.value == "all" else int(event.value)
-        self.page = 0
-        if self.paged:
+    # LIMIT, OFFSET and page number: typing one updates the others.
+
+    def _paging_values(self) -> tuple[str, str, str]:
+        return tuple(self.query_one(f"#{name}", Input).value for name in ("limit", "offset", "page-number"))
+
+    def _current_paging(self) -> tuple[str, str, str]:
+        return str(self.row_limit), str(self.row_offset), str(self.row_offset // self.row_limit + 1)
+
+    @on(Input.Changed, "#limit")
+    @on(Input.Changed, "#offset")
+    @on(Input.Changed, "#page-number")
+    def _paging_typed(self, event: Input.Changed) -> None:
+        if self._paging_values() == self._current_paging():
+            return  # our own update, or nothing to apply
+        if self._paging_timer is not None:
+            self._paging_timer.stop()
+        changed = event.input.id
+        self._paging_timer = self.set_timer(0.6, lambda: self._apply_paging(changed))
+
+    @on(Input.Submitted, "#limit")
+    @on(Input.Submitted, "#offset")
+    @on(Input.Submitted, "#page-number")
+    def _paging_submitted(self, event: Input.Submitted) -> None:
+        if self._paging_timer is not None:
+            self._paging_timer.stop()
+        self._apply_paging(event.input.id)
+
+    def _apply_paging(self, changed: str) -> None:
+        limit_text, offset_text, page_text = self._paging_values()
+        limit = int(limit_text or 0)
+        if not 1 <= limit <= MAX_ROWS:
+            self._paging_problem(f"LIMIT goes from 1 to {MAX_ROWS:,}.")
+            return
+        offset = int(offset_text or 0)
+        if changed == "page-number":
+            page = int(page_text or 0)
+            if page < 1:
+                self._paging_problem("Pages start at 1.")
+                return
+            offset = (page - 1) * limit
+        if (limit, offset) == (self.row_limit, self.row_offset):
+            self._sync_paging()
+            return
+        self.row_limit, self.row_offset = limit, offset
+        if self.result is None:
+            self._sync_paging()
+        elif self.paged:
             self._reload()
         else:
             self._render_page()
+
+    def _paging_problem(self, message: str) -> None:
+        self.query_one("#paging-note", Static).update(Text(message, style="red"))
+
+    def _sync_paging(self) -> None:
+        """Show the current LIMIT, OFFSET and page, and say what udbi sends and why."""
+        for name, value in zip(("limit", "offset", "page-number"), self._current_paging()):
+            field = self.query_one(f"#{name}", Input)
+            if field.value != value:
+                field.value = value
+        total = self.total if self.paged else (len(self.view) if self.result is not None else None)
+        pages = f"of {max(1, -(-total // self.row_limit)):,}" if total is not None else ("of …" if self.result is not None else "")
+        self.query_one("#page-count", Label).update(pages)
+        self.query_one("#paging-note", Static).update(self._paging_note())
+        sent = self.sent_sql if len(self.sent_sql) <= 400 else self.sent_sql[:399] + "…"
+        self.query_one("#paging-sql", Static).update(Text.assemble(("Sent: ", "bold"), sent) if sent else "")
+
+    def _paging_note(self) -> Text:
+        if self.result is None:
+            return Text(f"Results are read {self.row_limit:,} rows at a time: udbi adds LIMIT and OFFSET to your query.", style="dim")
+        if not self.paged:
+            return Text(
+                f"This statement can't be paged, so it ran as typed. udbi shows its first {MAX_ROWS:,} rows, {self.row_limit:,} at a time.",
+                style="dim",
+            )
+        note = (
+            f"udbi reads {self.row_limit:,} rows at a time by adding LIMIT/OFFSET to your query; your query isn't changed. "
+            f"It asks for {self.row_limit + 1:,} to know whether there's a next page."
+        )
+        if has_own_limit(self.sql, sqlglot_dialect(self.app.info.dialect)):
+            note += " Its own LIMIT still applies."
+        if self.sort or self.search:
+            note += " Sort and search run in the database."
+        return Text(note, style="dim")
 
     @on(DataTable.HeaderSelected)
     def _header_selected(self, event: DataTable.HeaderSelected) -> None:
@@ -624,7 +723,7 @@ class QueryPanel(Vertical):
         descending = self.sort is not None and self.sort[0] == column and not self.sort[1]
         self.sort = (column, descending)
         if self.paged:
-            self.page = 0
+            self.row_offset = 0
             self._reload()  # the database sorts the whole result
         else:
             self._apply_view()
@@ -647,7 +746,7 @@ class QueryPanel(Vertical):
             nulls = [index for index in self.view if rows[index][column] is None]
             values.sort(key=lambda index: sort_key(rows[index][column]), reverse=descending)
             self.view = values + nulls  # NULLs last either way
-        self.page = 0
+        self.row_offset = 0
         self._render_columns()
         self._render_page()
 
@@ -668,15 +767,15 @@ class QueryPanel(Vertical):
         if self.paged:
             shown = self.view
         else:
-            size = self.page_size or max(len(self.view), 1)
-            pages = max(1, -(-len(self.view) // size))
-            self.page = min(max(self.page, 0), pages - 1)
-            shown = self.view[self.page * size : self.page * size + size]
+            last_page = max(0, (len(self.view) - 1) // self.row_limit * self.row_limit)
+            self.row_offset = min(self.row_offset, last_page)
+            shown = self.view[self.row_offset : self.row_offset + self.row_limit]
         rows = self.result.rows
         grid.add_rows([[cell(value) for value in rows[index]] for index in shown])
         self._render_status()
 
     def _render_status(self) -> None:
+        self._sync_paging()
         if self.result is None:
             return
         self._set_status(self._summary())
@@ -687,20 +786,15 @@ class QueryPanel(Vertical):
     def _position(self) -> str:
         if not self.view:
             return "No rows"
-        if not self.paged:
-            size = self.page_size or max(len(self.view), 1)
-            pages = max(1, -(-len(self.view) // size))
-            start = self.page * size
-            end = min(start + size, len(self.view))
-            return f"Rows {start + 1:,}–{end:,} of {len(self.view):,}  |  page {self.page + 1} of {pages:,}"
-        size = self.page_size or MAX_ROWS
-        start = self.page * size
-        end = start + len(self.view)
-        if self.total is not None:
-            return f"Rows {start + 1:,}–{end:,} of {self.total:,}  |  page {self.page + 1} of {max(1, -(-self.total // size)):,}"
+        start = self.row_offset
+        end = start + (len(self.view) if self.paged else len(self.view[start : start + self.row_limit]))
+        total = self.total if self.paged else len(self.view)
+        page = start // self.row_limit + 1
+        if total is not None:
+            return f"Rows {start + 1:,}–{end:,} of {total:,}  |  page {page:,} of {max(1, -(-total // self.row_limit)):,}"
         if self.has_more:
-            return f"Rows {start + 1:,}–{end:,} of more (counting…)  |  page {self.page + 1}"
-        return f"Rows {start + 1:,}–{end:,} of {end:,}  |  page {self.page + 1} of {self.page + 1}"
+            return f"Rows {start + 1:,}–{end:,} of more (counting…)  |  page {page:,}"
+        return f"Rows {start + 1:,}–{end:,} of {end:,}  |  page {page:,} of {page:,}"
 
     def _summary(self) -> Text:
         result = self.result
@@ -724,12 +818,12 @@ class QueryPanel(Vertical):
         if self.result is None:
             return
         if self.paged:
-            if (step > 0 and not self.has_more) or (step < 0 and self.page == 0):
+            if (step > 0 and not self.has_more) or (step < 0 and self.row_offset == 0):
                 return
-            self.page += step
+            self.row_offset = max(0, self.row_offset + step * self.row_limit)
             self._reload()
         else:
-            self.page += step
+            self.row_offset = max(0, self.row_offset + step * self.row_limit)
             self._render_page()
 
     def action_focus_search(self) -> None:
