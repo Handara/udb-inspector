@@ -175,6 +175,14 @@ class Database:
     def close(self) -> None:
         self.engine.dispose()
 
+    def _inspect(self):
+        """SQLAlchemy's inspector, or for DuckDB one that reads DuckDB's own catalog."""
+        if dialect_name(self.engine.dialect) == "duckdb":
+            from .duckdb_schema import DuckDBInspector
+
+            return DuckDBInspector(self.engine)
+        return inspect(self.engine)
+
     def clear_cache(self) -> None:
         self._incoming_fks.clear()
         self._columns.clear()
@@ -182,8 +190,8 @@ class Database:
     def column_names(self, rel: Relation) -> list[tuple[str, str]]:
         """(name, type) of each column; cheaper than describe(), for completions."""
         if rel not in self._columns:
-            raw = inspect(self.engine).get_columns(rel.name, schema=rel.schema)
-            self._columns[rel] = [(column["name"], _type_name(column["type"], self.engine.dialect)) for column in raw]
+            raw = self._inspect().get_columns(rel.name, schema=rel.schema)
+            self._columns[rel] = [(column["name"], column.get("display_type") or _type_name(column["type"], self.engine.dialect)) for column in raw]
         return self._columns[rel]
 
     def server_info(self) -> ServerInfo:
@@ -211,7 +219,7 @@ class Database:
 
     def schemas(self) -> list[str]:
         """User schemas, default schema first."""
-        insp = inspect(self.engine)
+        insp = self._inspect()
         default = insp.default_schema_name
         name = dialect_name(self.engine.dialect)
         if name in DEFAULT_SCHEMA_ONLY:
@@ -229,7 +237,7 @@ class Database:
 
     def relations(self, schema: str) -> list[Relation]:
         """Tables then views in `schema`, each sorted by name."""
-        insp = inspect(self.engine)
+        insp = self._inspect()
         tables = sorted(insp.get_table_names(schema=schema), key=str.lower)
         views = sorted(insp.get_view_names(schema=schema), key=str.lower)
         return [Relation(schema, name, "table") for name in tables] + [
@@ -237,7 +245,7 @@ class Database:
         ]
 
     def describe(self, rel: Relation) -> TableDetails:
-        insp = inspect(self.engine)
+        insp = self._inspect()
         name, schema = rel.name, rel.schema
         dialect = self.engine.dialect
         comment = (_optional(insp.get_table_comment, name, schema=schema) or {}).get("text")
@@ -401,7 +409,7 @@ class Database:
         """
         index = self._incoming_fks.get(rel.schema)
         if index is None:
-            insp = inspect(self.engine)
+            insp = self._inspect()
             default_schema = insp.default_schema_name or rel.schema
             index = {}
             for (schema, table), raws in insp.get_multi_foreign_keys(schema=rel.schema).items():
@@ -424,7 +432,7 @@ def _column(raw: dict, dialect: Dialect, *, primary_key: bool, references: str |
     default = raw.get("default")
     return Column(
         name=raw["name"],
-        type=_type_name(raw["type"], dialect),
+        type=raw.get("display_type") or _type_name(raw["type"], dialect),
         # SQLite reports INTEGER PRIMARY KEY as nullable; no primary key column is.
         nullable=bool(raw["nullable"]) and not primary_key,
         default=None if default is None else str(default),

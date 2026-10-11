@@ -127,3 +127,29 @@ def test_sqlite_unique_after_a_sized_type(tmp_path):
     keys = Database(detect(str(path))).describe(Relation("main", "people", "table")).keys
     unique = sorted(key.definition for key in keys if key.kind == "unique")
     assert unique == ["a, b", "code", "handle"]  # each once, handle included
+
+
+def test_duckdb_schema_comes_from_its_catalog(tmp_path):
+    duckdb = pytest.importorskip("duckdb")
+    pytest.importorskip("duckdb_engine")
+    path = tmp_path / "x.duckdb"
+    conn = duckdb.connect(str(path))
+    conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL UNIQUE, score DECIMAL(10,2) DEFAULT 0, CHECK (score >= 0))")
+    conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id))")
+    conn.execute("CREATE SCHEMA sales")
+    conn.execute("COMMENT ON TABLE users IS 'people'")
+    conn.close()
+    db = Database(detect(str(path)))
+    assert db.schemas() == ["main", "sales"]  # not DuckDB's system and temp catalogs
+    users = Relation("main", "users", "table")
+    details = db.describe(users)
+    assert [(c.name, c.type, c.primary_key, c.nullable) for c in details.columns] == [
+        ("id", "INTEGER", True, False),
+        ("email", "VARCHAR", False, False),
+        ("score", "DECIMAL(10,2)", False, True),
+    ]
+    assert details.comment == "people"
+    assert {(k.kind, k.definition) for k in details.keys} == {("primary key", "id"), ("unique", "email"), ("check", "score >= 0")}
+    orders = db.describe(Relation("main", "orders", "table"))
+    assert orders.columns[1].references == "users.id"
+    assert [(fk.table, fk.columns) for fk in db.referenced_by(users)] == [("orders", ("user_id",))]
