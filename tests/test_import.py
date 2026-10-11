@@ -268,8 +268,9 @@ async def settle(pilot):
 
 
 async def paste(app, pilot, text):
-    app.import_panel.query_one("#paste").text = text
-    await pilot.pause(0.5)  # the preview waits for the paste to finish
+    from textual import events
+
+    app.focused.post_message(events.Paste(text))  # what the terminal sends for ctrl+v
     await settle(pilot)
 
 
@@ -343,3 +344,26 @@ def test_templates_from_the_tab(items_db, tmp_path):
     run(app, scenario)
     sheet = load_workbook(tmp_path / "items-update-template.xlsx").active
     assert [cell.value for cell in sheet[1]] == ["id", "name", "price"]
+
+
+def test_paste_fills_the_table_and_clear_empties_it(items_db):
+    from textual.widgets import DataTable
+
+    app = InspectorApp(replace(detect(str(items_db)), allow_writes=True))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("down", "f4")
+        await settle(pilot)
+        preview = app.import_panel.query_one("#import-preview", DataTable)
+        assert app.focused is preview
+        await paste(app, pilot, "name\tprice\nc\t3\nd\t4\n")
+        assert preview.row_count == 2
+        await paste(app, pilot, "name\nx\n")  # a new paste replaces the rows
+        assert preview.row_count == 1
+        await pilot.press("ctrl+l")
+        await pilot.pause()
+        assert preview.row_count == 0 and app.import_panel.pasted == ""
+        assert "press ctrl+v here" in text_of(app, "#import-summary")
+
+    run(app, scenario)

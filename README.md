@@ -166,9 +166,11 @@ are neither grouped nor aggregated.
 `F4` opens the Import tab. Pick the table and what to do with the rows:
 insert, update (matched by a key column, the primary key unless you pick
 another), upsert (update, or insert when the key isn't there) or delete. Then
-paste rows copied from Excel or any spreadsheet (CSV text works too). The
-first row has to be the column names; they match the table's columns
-ignoring case, spaces and underscores, and other columns are ignored.
+copy the rows in Excel or any spreadsheet, header row included, and press
+`ctrl+v` in the tab: they fill the preview table (CSV text works too). The
+header row names the columns; they match the table's columns ignoring case,
+spaces and underscores, and other columns are ignored. Pasting again replaces
+the rows; **Clear** (`ctrl+l`) empties the table.
 
 - **Copy template** puts the column names on the clipboard, ready to paste into
   Excel's first row. **Save template as .xlsx** writes them to a file where each

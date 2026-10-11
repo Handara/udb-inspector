@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, DataTable, Label, Select, Static, TextArea
+from textual.widgets import Button, DataTable, Label, Select, Static
 
 from ..connections import tilde
 from ..database import ImportReport, QueryError, Relation, RowFailure, WritesNotAllowed
@@ -19,7 +19,10 @@ PREVIEW_ROWS = 500  # the preview shows this many; every row is still imported
 
 
 class ImportPanel(Vertical):
-    BINDINGS = [Binding("ctrl+enter,ctrl+j,ctrl+r,f5", "run", "Import")]
+    BINDINGS = [
+        Binding("ctrl+enter,ctrl+j,ctrl+r,f5", "run", "Import"),
+        Binding("ctrl+l", "clear", "Clear"),
+    ]
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -27,7 +30,7 @@ class ImportPanel(Vertical):
         self.columns: dict[Relation, list[ColumnInfo]] = {}
         self.plan: Plan | None = None
         self.report: ImportReport | None = None
-        self._timer = None
+        self.pasted = ""  # the text of the last paste
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="import-bar"):
@@ -40,12 +43,8 @@ class ImportPanel(Vertical):
         with Horizontal(classes="import-bar"):
             yield Button("Copy template", id="copy-template", compact=True)
             yield Button("Save template as .xlsx", id="save-template", compact=True)
+            yield Button("Clear", id="clear-paste", compact=True)
             yield Static(id="import-lock")
-        yield TextArea(
-            "",
-            id="paste",
-            placeholder="Paste rows copied from Excel here (ctrl+v). The first row must be the column names: copy a template to start.",
-        )
         yield Static(id="import-summary")
         yield DataTable(id="import-preview", zebra_stripes=True)
         with Horizontal(classes="import-bar"):
@@ -118,11 +117,20 @@ class ImportPanel(Vertical):
     def _choice_changed(self) -> None:
         self._refresh()
 
-    @on(TextArea.Changed, "#paste")
-    def _pasted(self) -> None:
-        if self._timer is not None:
-            self._timer.stop()
-        self._timer = self.set_timer(0.3, self._refresh)  # big pastes arrive in pieces
+    def on_paste(self, event: events.Paste) -> None:
+        """ctrl+v anywhere in the tab: the pasted rows replace the ones shown."""
+        event.stop()
+        self.pasted = event.text
+        self.report = None
+        self._show_report()
+        self._refresh()
+
+    @on(Button.Pressed, "#clear-paste")
+    def action_clear(self) -> None:
+        self.pasted = ""
+        self.report = None
+        self._show_report()
+        self._refresh()
 
     def _refresh(self) -> None:
         rel = self.relation
@@ -139,7 +147,7 @@ class ImportPanel(Vertical):
             self._set_summary(Text("Pick the table to import into." if rel is None else "Reading the table's columns…", style="dim"))
             self._render_preview()
             return
-        pasted = parse_pasted(self.query_one("#paste", TextArea).text)
+        pasted = parse_pasted(self.pasted)
         self.plan = plan(pasted, columns, self.operation, self.key) if pasted.headers else None
         self._set_summary(self._summary(pasted.headers))
         self._render_preview()
@@ -160,7 +168,9 @@ class ImportPanel(Vertical):
 
     def _summary(self, headers: list[str]) -> Text:
         if not headers:
-            return Text("Paste rows to see how they'll be imported.", style="dim")
+            return Text(
+                "Copy rows in Excel, including the header row, and press ctrl+v here. Copy a template to start.", style="dim"
+            )
         result = self.plan
         if result.problems:
             return Text("⚠ " + " ".join(result.problems), style="yellow")
@@ -313,7 +323,7 @@ class ImportPanel(Vertical):
     def _copy_failed(self) -> None:
         if not self.report or not self.report.failures:
             return
-        headers = parse_pasted(self.query_one("#paste", TextArea).text).headers
+        headers = parse_pasted(self.pasted).headers
         lines = ["\t".join(headers + ["error"])]
         for failure in self.report.failures:
             cells = (failure.cells + [""] * len(headers))[: len(headers)]

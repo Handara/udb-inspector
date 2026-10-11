@@ -180,11 +180,6 @@ ImportPanel .import-bar Button {
     width: 1fr;
 }
 
-#paste {
-    height: 8;
-    margin-top: 1;
-}
-
 #import-summary, #import-result {
     height: auto;
     margin-top: 1;

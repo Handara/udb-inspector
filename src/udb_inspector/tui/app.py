@@ -150,7 +150,7 @@ class InspectorApp(App):
         node = self.tree.cursor_node
         if node is not None and isinstance(node.data, Relation) and node.data.kind == "table":
             self.import_panel.choose(node.data)
-        self.import_panel.query_one("#paste").focus()
+        self.import_panel.query_one("#import-preview").focus()
 
     def _sync_import_tables(self) -> None:
         relations = [rel for schema in self.schemas for rel in self.relations.get(schema, [])]
@@ -184,7 +184,7 @@ class InspectorApp(App):
         if pane == "tables":
             self.tree.focus()
         elif pane == "main" and tabs.active == "import-tab":
-            self.import_panel.query_one("#paste").focus()
+            self.import_panel.query_one("#import-preview").focus()
         elif pane == "editor" or (pane == "main" and tabs.active == "query-tab" and not self.query_panel.result):
             self.action_query()
         elif pane == "results" or pane == "main" and tabs.active == "query-tab":
@@ -200,7 +200,7 @@ class InspectorApp(App):
         if event.tabbed_content.active == "import-tab":
             self._sync_import_tables()
             if self.focused is None or self.import_panel not in self.focused.ancestors_with_self:
-                self.import_panel.query_one("#paste").focus()
+                self.import_panel.query_one("#import-preview").focus()
         elif event.tabbed_content.active == "query-tab":
             if not inside_query:
                 self.query_panel.editor.focus()
