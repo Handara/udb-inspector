@@ -1,0 +1,70 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds udbi on each platform and attaches the
+# executables to a GitHub release of that name.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04's glibc (2.35) keeps the Linux builds running on most distros since 2022.
+          - os: ubuntu-22.04
+            asset: udbi-linux-x86_64
+          - os: ubuntu-22.04-arm
+            asset: udbi-linux-arm64
+          - os: macos-14
+            asset: udbi-macos-arm64
+          - os: windows-latest
+            asset: udbi-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/build_binary.py
+      - name: Smoke test and name the executable
+        shell: bash
+        run: |
+          binary=dist/udbi
+          if [ -f dist/udbi.exe ]; then binary=dist/udbi.exe; fi
+          "$binary" --help
+          python scripts/make_demo_db.py demo.sqlite3
+          "$binary" demo.sqlite3 --info
+          mv "$binary" "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" assets/* --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

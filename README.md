@@ -5,39 +5,50 @@ a database, it works out what it is, and you browse it from a sidebar.
 
 ## Install
 
-### Standalone executable (no Python needed)
+**Linux and macOS (Apple Silicon):**
 
-`udbi` can be built as a single file that carries its own Python and the
-drivers for SQLite, PostgreSQL, MySQL/MariaDB, Oracle and DuckDB:
+```sh
+curl -fsSL https://raw.githubusercontent.com/Handara/udb-inspector/main/install.sh | sh
+```
+
+This puts a single `udbi` file in `~/.local/bin` (set `UDBI_INSTALL_DIR` to
+choose another folder). It carries its own Python and the drivers for SQLite,
+PostgreSQL, MySQL/MariaDB, Oracle and DuckDB, so there is nothing else to
+install. Run the same command again to update.
+
+**Windows:** download `udbi-windows-x86_64.exe` from the
+[latest release](https://github.com/Handara/udb-inspector/releases/latest),
+rename it to `udbi.exe` and put it in a folder on your PATH. The executables
+aren't signed, so Windows SmartScreen may warn the first time.
+
+**With Python** (any platform, and the only way to get SQL Server, which also
+needs Microsoft's ODBC driver):
+
+```sh
+pipx install "udb-inspector[all] @ git+https://github.com/Handara/udb-inspector"
+```
+
+### Building it yourself
 
 ```sh
 python3 scripts/build_binary.py             # writes dist/udbi (about 60 MB)
 python3 scripts/build_binary.py --install   # and copies it to ~/.local/bin/udbi
 ```
 
-The build makes its own virtualenv in `build/`; the result doesn't need one,
-or Python at all. It runs on the OS and CPU it was built on, and on Linux needs
-a glibc at least as new as the build machine's. SQL Server isn't included: it
-needs Microsoft's ODBC driver on the machine, so use the Python install below.
+The build makes its own virtualenv in `build/`. The executable runs on the OS
+and CPU it was built on, and on Linux needs a glibc at least as new as the
+build machine's.
 
-### With Python
-
-From this folder, with [pipx](https://pipx.pypa.io):
-
-```sh
-pipx install --editable ".[postgres]"   # or mysql, mssql, oracle, duckdb, all; SQLite needs no extra
-```
-
-`--editable` means new commits take effect without reinstalling. To add a
-driver later: `pipx install --force --editable ".[postgres,mysql]"`.
-
-### For working on udbi itself
+### Working on udbi
 
 ```sh
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev,postgres]"
 pytest
 ```
+
+Pushing a tag like `v0.2.0` makes GitHub build the executables for every
+platform and publish them as a release.
 
 ## Use
 

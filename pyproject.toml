@@ -8,6 +8,10 @@ version = "0.1.0"
 description = "Terminal database inspector: browse schemas, run queries, export CSV/Excel."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Handara" }]
+keywords = ["database", "sql", "tui", "inspector", "postgresql", "mysql", "sqlite", "oracle", "duckdb"]
 dependencies = [
     "openpyxl>=3.1",
     "python-dotenv>=1.0",
@@ -27,6 +31,10 @@ oracle = ["oracledb>=2.0"]
 duckdb = ["duckdb-engine>=0.13"]
 all = ["udb-inspector[postgres,mysql,mssql,oracle,duckdb]"]
 dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/Handara/udb-inspector"
+Issues = "https://github.com/Handara/udb-inspector/issues"
 
 [project.scripts]
 udbi = "udb_inspector.cli:main"
