@@ -154,10 +154,17 @@ def test_tab_opens_the_list_and_enter_inserts(sample_db):
         await pilot.press("enter")
         assert editor.text == "SELECT * FROM users u WHERE u.email"
 
-        editor.insert(" = 'x'\n")
+        editor.insert(" = 'x'\nAND ")
         await pilot.pause()
-        await pilot.press("tab")  # nothing to suggest: tab indents
-        assert editor.text.endswith("\n    ")
+        await pilot.press("tab")  # nothing typed yet: the list opens anyway
+        assert app.focused is listing
+        await pilot.press("escape")
+
+        editor.insert("1 = 1 -- note ")
+        await pilot.pause()
+        before = editor.text
+        await pilot.press("tab")  # in a comment there's nothing to suggest: tab indents
+        assert editor.text.startswith(before) and editor.text[len(before):].strip(" ") == "" and len(editor.text) > len(before)
 
     run(app, scenario)
 

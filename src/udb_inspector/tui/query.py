@@ -48,8 +48,9 @@ class QueryEditor(TextArea):
 
     @property
     def can_suggest(self) -> bool:
-        context = self.context
-        return bool(self.suggestions) and not self.dismissed and bool(context.prefix or context.qualifier or context.kind == "table")
+        # Also with nothing typed yet (after SELECT , WHERE , …). Tab indents
+        # where there's nothing to suggest, such as in a string or comment.
+        return bool(self.suggestions) and not self.dismissed
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "open_suggestions":
