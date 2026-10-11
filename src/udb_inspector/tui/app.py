@@ -34,6 +34,17 @@ class FilterInput(Input):
     BINDINGS = [Binding("down", "app.focus_tree", show=False)]
 
 
+class SchemaTree(Tree[NodeData]):
+    """The tables sidebar. Its keys live here so the footer only shows them here."""
+
+    BINDINGS = [
+        Binding("slash", "app.focus_filter", "Filter"),
+        Binding("s", "app.select_rows", "Select rows"),
+        Binding("i", "app.show_connection", "Info"),
+        Binding("r", "app.reload", "Reload schema"),
+    ]
+
+
 class InspectorApp(App):
     TITLE = "udbi"
     CSS_PATH = "app.tcss"
@@ -45,10 +56,6 @@ class InspectorApp(App):
         Binding("ctrl+t", "focus_tables", "Tables"),
         Binding("f2", "schema", "Schema"),
         Binding("f3,e", "query", "Query"),
-        Binding("slash", "focus_filter", "Filter"),
-        Binding("s", "select_rows", "Select rows"),
-        Binding("i", "show_connection", "Info"),
-        Binding("r", "reload", "Reload schema"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
     NEEDS_DATABASE = {
@@ -74,7 +81,7 @@ class InspectorApp(App):
         with Horizontal():
             with Vertical(id="sidebar"):
                 yield FilterInput(placeholder="Filter tables  ( / )", id="filter")
-                yield Tree[NodeData](Text("No database", style="dim"), id="tree")
+                yield SchemaTree(Text("No database", style="dim"), id="tree")
             with TabbedContent(id="tabs"):
                 with TabPane("Schema", id="schema-tab"):
                     with VerticalScroll(id="main"):

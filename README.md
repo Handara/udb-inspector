@@ -75,9 +75,9 @@ its SQL definition.
 
 ### Queries
 
-The Query tab (`e`) has an SQL editor. `ctrl+r` (or `F5`, or `ctrl+enter`
-where the terminal supports it) runs the statement under the cursor, or the
-selected text. Results show up to 10,000 rows in a grid:
+The Query tab (`F3` or `e`) has an SQL editor. `ctrl+enter` runs the statement
+under the cursor, or the selected text. Some terminals (VS Code's, for one) send
+ctrl+enter as a plain enter; there `ctrl+r` or `F5` run it instead. Results show up to 10,000 rows in a grid:
 
 | Key | Action |
 | --- | --- |
@@ -104,8 +104,9 @@ the connected database, such as `LIMIT` for PostgreSQL and `TOP` or
 
 | Key | Action |
 | --- | --- |
-| `tab` | Insert the highlighted suggestion (indents when there is none) |
-| `ctrl+n` `ctrl+p` | Highlight the next / previous suggestion |
+| `tab` | Open the suggestions as a list (indents when there are none) |
+| `↑` `↓`, `tab` `shift+tab` | In the list: move the highlight |
+| `enter` | In the list: insert the highlighted suggestion. Typing a letter goes back to the editor |
 | `esc` | Walks outward: hides the suggestions, then leaves the editor for the results, then the tables |
 | `F1` | Cheat sheet for the connected database: limiting rows, paging, quoting, dates, text, catalog queries |
 

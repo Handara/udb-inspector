@@ -144,7 +144,7 @@ def test_run_the_statement_under_the_cursor(items_db):
         assert app.focused is panel.editor
         panel.editor.text = "SELECT name FROM items WHERE id = 1;\nSELECT id FROM items WHERE id <= 3"
         panel.editor.move_cursor((0, 5))
-        await pilot.press("ctrl+r")
+        await pilot.press("ctrl+enter")
         await settle(pilot)
         assert grid_rows(app) == [["item 001"]]
 

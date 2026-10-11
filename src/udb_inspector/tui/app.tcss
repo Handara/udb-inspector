@@ -33,6 +33,14 @@ QueryPanel {
     height: 10;
 }
 
+#suggestions {
+    display: none;
+    height: auto;
+    max-height: 9;
+    border: tall $accent;
+    margin: 0 1;
+}
+
 #hints, #status, #pager {
     height: auto;
     padding: 0 1;

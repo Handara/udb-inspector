@@ -127,29 +127,57 @@ def hint_text(app):
     return console.file.getvalue()
 
 
-def test_tab_inserts_tables_and_alias_columns(sample_db):
+def test_tab_opens_the_list_and_enter_inserts(sample_db):
+    from udb_inspector.tui.query import SuggestionList
+
     app = InspectorApp(detect(str(sample_db)))
 
     async def scenario(pilot):
         await settle(pilot)
         await pilot.press("e")
         editor = app.query_panel.editor
+        listing = app.query_panel.query_one(SuggestionList)
         editor.insert("SELECT * FROM us")
         await pilot.pause()
         assert "Tables:  users" in hint_text(app)
         await pilot.press("tab")
+        assert app.focused is listing and listing.highlighted == 0
+        await pilot.press("enter")
         assert editor.text == "SELECT * FROM users"
+        assert app.focused is editor and not listing.display
 
         editor.insert(" u WHERE u.")
         await settle(pilot)  # the columns load in the background
         assert "Columns of u:  id INTEGER  |  email TEXT  |  age INTEGER" in hint_text(app)
-        await pilot.press("ctrl+n", "tab")
+        await pilot.press("tab", "tab", "tab", "shift+tab")  # open, down, down, up
+        assert listing.highlighted == 1
+        await pilot.press("enter")
         assert editor.text == "SELECT * FROM users u WHERE u.email"
 
         editor.insert(" = 'x'\n")
         await pilot.pause()
-        await pilot.press("tab")  # nothing to insert: tab indents
+        await pilot.press("tab")  # nothing to suggest: tab indents
         assert editor.text.endswith("\n    ")
+
+    run(app, scenario)
+
+
+def test_the_list_gives_way_to_typing_and_esc(sample_db):
+    from udb_inspector.tui.query import SuggestionList
+
+    app = InspectorApp(detect(str(sample_db)))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        await pilot.press("e")
+        editor = app.query_panel.editor
+        listing = app.query_panel.query_one(SuggestionList)
+        editor.insert("SELECT * FROM o")
+        await pilot.pause()
+        await pilot.press("tab", "r")  # keep typing: the r goes to the editor
+        assert editor.text == "SELECT * FROM or" and app.focused is editor and not listing.display
+        await pilot.press("tab", "escape")  # esc: back without inserting
+        assert editor.text == "SELECT * FROM or" and app.focused is editor and not listing.display
 
     run(app, scenario)
 

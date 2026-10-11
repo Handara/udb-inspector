@@ -16,7 +16,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Input, Label, Select, Static, TextArea
+from textual.widgets import Button, DataTable, Input, Label, OptionList, Select, Static, TextArea
+from textual.widgets.option_list import Option
 
 from .. import export
 from ..connections import tilde
@@ -30,14 +31,12 @@ CELL_WIDTH = 60  # longer values are cut in the grid; enter shows them in full
 
 
 class QueryEditor(TextArea):
-    """SQL editor that can insert the hint bar's highlighted suggestion."""
+    """SQL editor whose tab key opens the list of suggestions."""
 
     BINDINGS = [
         # priority: checked before TextArea's own tab handling; when there is
-        # nothing to accept, check_action turns it off and tab indents as usual.
-        Binding("tab", "accept", "Insert suggestion", show=False, priority=True),
-        Binding("ctrl+n", "choose(1)", "Next suggestion", show=False),
-        Binding("ctrl+p", "choose(-1)", "Previous suggestion", show=False),
+        # nothing to suggest, check_action turns it off and tab indents as usual.
+        Binding("tab", "open_suggestions", "Suggestions", show=False, priority=True),
         # priority too: TextArea's own escape moves focus on before bindings run.
         Binding("escape", "escape", "Hide suggestions or leave", show=False, priority=True),
     ]
@@ -45,30 +44,25 @@ class QueryEditor(TextArea):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.suggestions: list[Suggestion] = []
-        self.chosen = 0
         self.context = Context("none")
         self.dismissed = False
 
     @property
-    def can_accept(self) -> bool:
+    def can_suggest(self) -> bool:
         context = self.context
         return bool(self.suggestions) and not self.dismissed and bool(context.prefix or context.qualifier or context.kind == "table")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "accept":
-            return self.can_accept
-        if action == "choose":
-            return bool(self.suggestions) and not self.dismissed
+        if action == "open_suggestions":
+            return self.can_suggest
         return super().check_action(action, parameters)
 
-    def action_accept(self) -> None:
-        suggestion = self.suggestions[self.chosen]
+    def action_open_suggestions(self) -> None:
+        self.post_message(self.OpenSuggestions())
+
+    def insert_suggestion(self, suggestion: Suggestion) -> None:
         row, column = self.cursor_location
         self.replace(suggestion.text, (row, column - len(self.context.prefix)), (row, column))
-
-    def action_choose(self, step: int) -> None:
-        self.chosen = (self.chosen + step) % len(self.suggestions)
-        self.post_message(self.SuggestionsChanged())
 
     def action_escape(self) -> None:
         """Hide the suggestions; with none showing, leave for the results or the tables."""
@@ -85,10 +79,42 @@ class QueryEditor(TextArea):
     class SuggestionsChanged(Message):
         pass
 
+    class OpenSuggestions(Message):
+        pass
+
+
+class SuggestionList(OptionList):
+    """The suggestions as a list: tab / shift+tab or arrows to move, enter to insert."""
+
+    BINDINGS = [
+        Binding("tab", "cursor_down", "Next", show=False),
+        Binding("shift+tab", "cursor_up", "Previous", show=False),
+        Binding("escape", "close", "Back to the editor", show=False),
+    ]
+
+    class Closed(Message):
+        def __init__(self, typed: str | None = None) -> None:
+            super().__init__()
+            self.typed = typed  # a character typed while the list had focus
+
+    def action_close(self) -> None:
+        self.post_message(self.Closed())
+
+    def on_key(self, event) -> None:
+        if event.is_printable:  # keep typing: the letter belongs in the editor
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Closed(event.character))
+
+    def on_blur(self) -> None:
+        self.display = False
+
 
 class QueryPanel(Vertical):
     BINDINGS = [
-        Binding("ctrl+r,f5,ctrl+enter", "run", "Run"),
+        # ctrl+j: what some terminals send for ctrl+enter. ctrl+r and F5 for terminals
+        # that send ctrl+enter as a plain enter.
+        Binding("ctrl+enter,ctrl+j,ctrl+r,f5", "run", "Run"),
         Binding("f1", "cheat_sheet", "Cheat sheet"),
         Binding("ctrl+s,x", "export", "Export"),
         Binding("left_square_bracket", "page(-1)", "Previous page", show=False),
@@ -113,6 +139,7 @@ class QueryPanel(Vertical):
 
     def compose(self) -> ComposeResult:
         yield QueryEditor.code_editor("", language="sql", id="editor", show_line_numbers=True)
+        yield SuggestionList(id="suggestions")
         yield Static(self._default_hints(), id="hints")
         with Horizontal(id="result-bar"):
             yield Input(placeholder="Search results  ( / )", id="search", compact=True)
@@ -130,7 +157,7 @@ class QueryPanel(Vertical):
         return self.query_one(DataTable)
 
     def _default_hints(self) -> Text:
-        return key_hints(("ctrl+r", "run the statement under the cursor"), ("f1", "cheat sheet"), ("esc", "leave the editor"))
+        return key_hints(("ctrl+enter", "run the statement under the cursor"), ("f1", "cheat sheet"), ("esc", "leave the editor"))
 
     # Hints
 
@@ -150,6 +177,38 @@ class QueryPanel(Vertical):
     def _suggestions_changed(self) -> None:
         self._render_hints()
 
+    @on(QueryEditor.OpenSuggestions)
+    def _open_suggestions(self) -> None:
+        listing = self.query_one(SuggestionList)
+        width = max(len(item.label) for item in self.editor.suggestions)
+        listing.clear_options()
+        listing.add_options(
+            [
+                Option(Text.assemble((item.label.ljust(width), "bold"), "   ", (item.detail or item.kind, "dim")), id=str(index))
+                for index, item in enumerate(self.editor.suggestions)
+            ]
+        )
+        listing.highlighted = 0
+        listing.display = True
+        listing.focus()
+        self._render_hints()
+
+    @on(OptionList.OptionSelected, "#suggestions")
+    def _suggestion_selected(self, event: OptionList.OptionSelected) -> None:
+        suggestion = self.editor.suggestions[int(event.option.id)]
+        self._close_suggestions()
+        self.editor.insert_suggestion(suggestion)
+
+    @on(SuggestionList.Closed)
+    def _suggestions_closed(self, event: SuggestionList.Closed) -> None:
+        self._close_suggestions()
+        if event.typed:
+            self.editor.insert(event.typed)
+
+    def _close_suggestions(self) -> None:
+        self.query_one(SuggestionList).display = False
+        self.editor.focus()
+
     def _refresh_suggestions(self) -> None:
         info, db = self.app.info, self.app.db
         if info is None or db is None:
@@ -157,13 +216,10 @@ class QueryPanel(Vertical):
         editor = self.editor
         offset = editor.document.get_index_from_location(editor.cursor_location)
         context = context_at(editor.text, offset, info.dialect)
-        previous = [s.label for s in editor.suggestions]
         editor.context = context
         editor.suggestions = suggest(
             context, info.dialect, self._tables(), self._columns_for, db.engine.dialect.identifier_preparer.quote
         )[:50]
-        if [s.label for s in editor.suggestions] != previous:
-            editor.chosen = 0
         statement = statement_at(editor.text, offset, sqlglot_dialect(info.dialect))
         self._notes = notes(statement, info.dialect)
         self._render_hints()
@@ -221,22 +277,23 @@ class QueryPanel(Vertical):
         editor = self.editor
         context = editor.context
         lines: list[Text] = []
-        if editor.suggestions and not editor.dismissed:
+        listing = self.query_one(SuggestionList)
+        if listing.display:
+            lines.append(key_hints(("↑↓ tab", "choose"), ("enter", "insert"), ("esc", "back")))
+        elif editor.suggestions and not editor.dismissed:
             heading = {
                 "table": "Tables",
                 "statement": "Start with",
             }.get(context.kind, f"Columns of {context.qualifier}" if context.qualifier else "Suggestions")
             line = Text(f"{heading}:  ", style="dim", no_wrap=True, overflow="ellipsis")
-            start = max(0, min(editor.chosen - 2, len(editor.suggestions) - 8))
-            for index, item in enumerate(editor.suggestions[start : start + 8], start):
-                if index > start:
+            for index, item in enumerate(editor.suggestions[:8]):
+                if index:
                     line.append("  |  ", style="dim")
-                style = "reverse bold" if index == editor.chosen else ""
-                line.append(item.label, style=style)
+                line.append(item.label, style="bold" if index == 0 else "")
                 if item.detail or item.kind in ("table", "view") and context.kind != "table":
                     line.append(f" {item.detail or item.kind}", style="dim")
-            if len(editor.suggestions) > start + 8:
-                line.append(f"  +{len(editor.suggestions) - start - 8}", style="dim")
+            if len(editor.suggestions) > 8:
+                line.append(f"  +{len(editor.suggestions) - 8} more", style="dim")
             lines.append(line)
         elif context.kind == "column" and not context.scope and editor.text.strip():
             lines.append(Text("Name a table after FROM to get its columns.", style="dim"))
@@ -244,8 +301,8 @@ class QueryPanel(Vertical):
             lines.append(Text("⚠ " + self._notes[0], style="yellow"))
         elif self._syntax:
             lines.append(Text("⚠ " + self._syntax, style="yellow"))
-        if editor.can_accept:
-            lines.append(key_hints(("tab", "insert"), ("ctrl+n ctrl+p", "choose"), ("esc", "hide"), ("f1", "cheat sheet")))
+        if editor.can_suggest and not listing.display:
+            lines.append(key_hints(("tab", "pick a suggestion"), ("esc", "hide"), ("ctrl+enter", "run"), ("f1", "cheat sheet")))
         if not lines:
             lines.append(self._default_hints())
         self.query_one("#hints", Static).update(Group(*lines[:2]))  # a Group keeps each line's no_wrap
