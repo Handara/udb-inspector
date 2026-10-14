@@ -13,13 +13,14 @@ from textual.widgets import OptionList
 
 from udb_inspector import salesforce
 from udb_inspector.connections import global_dir, resolve
-from udb_inspector.database import ConnectError, QueryError, Relation
+from udb_inspector.database import ConnectError, ForeignKey, QueryError, Relation
 from udb_inspector.detect import detect
 from udb_inspector.salesforce import Api, ApiError, SalesforceOrg, SfError, SfOrg, field_type, list_orgs
 from udb_inspector.sql import ReadOnlyError
 from udb_inspector.tui import app as app_module
 from udb_inspector.tui import screens
 from udb_inspector.tui.app import InspectorApp
+from udb_inspector.tui.record import RecordScreen
 from udb_inspector.tui.screens import ConfirmScreen, ConnectionsScreen
 
 ORG_LIST = {
@@ -58,10 +59,10 @@ ACCOUNT = {
 
 GLOBAL = {
     "sobjects": [
-        {"name": "Account", "queryable": True, "custom": False},
+        {"name": "Account", "queryable": True, "custom": False, "keyPrefix": "001"},
         {"name": "AccountChangeEvent", "queryable": False, "custom": False},
-        {"name": "invoice__c", "queryable": True, "custom": True},
-        {"name": "Contact", "queryable": True, "custom": False},
+        {"name": "invoice__c", "queryable": True, "custom": True, "keyPrefix": "a00"},
+        {"name": "Contact", "queryable": True, "custom": False, "keyPrefix": "003"},
     ]
 }
 
@@ -352,9 +353,22 @@ class QueryApi(FakeApi):
             return CONTACT
         if path == "sobjects/Account/describe":
             return ACCOUNT_NAME
+        if path.startswith("sobjects/Contact/"):
+            found = [c for c in CONTACTS if c["Id"] == path.rsplit("/", 1)[1]]
+            if not found:
+                raise ApiError(404, [{"errorCode": "NOT_FOUND", "message": "The requested resource does not exist"}])
+            return {"MailingAddress": None, **found[0]}  # every field, in the API's own order
         return super().get(path)
 
     def request(self, method, path, body=None, *, headers=None):
+        if path.endswith("/composite/batch"):
+            self.calls.append(f"batch of {len(body['batchRequests'])}")
+            results = []
+            for sub in body["batchRequests"]:
+                text = unquote(sub["url"].split("?q=", 1)[1])
+                field, value = re.search(r"WHERE (\w+) = '(.*)'", text).groups()
+                results.append({"statusCode": 200, "result": {"totalSize": sum(1 for c in CONTACTS if str(c.get(field)) == value)}})
+            return {"hasErrors": False, "results": results}
         size = int((headers or {}).get("Sforce-Query-Options", "batchSize=2000").split("=")[1])
         if "?q=" in path:
             text = unquote(path.split("?q=", 1)[1])
@@ -512,5 +526,50 @@ def test_soql_hints_in_the_editor(monkeypatch):
         assert "Fields of Contact:  Id Id  |  LastName Text(80)  |  Kind Picklist" in console.file.getvalue()
         await pilot.press("f1")
         assert "SOQL cheat sheet" in str(app.screen.query_one(".title").content)
+
+    run(app, scenario)
+
+
+def test_records():
+    org = query_org()
+    contact = Relation("uat", "Contact", "object")
+    columns, values = org.fetch_row(contact, {"Id": CONTACTS[7]["Id"]})
+    assert columns[:4] == ["Id", "LastName", "Kind", "Score"] and values[1] == "Name 007"  # the describe's order
+    assert org.fetch_row(contact, {"Id": "003999999999999999"}) is None
+    assert org.select_sql(contact, {"Kind": "Gold", "Score": Decimal("1.5"), "Active": True}) == (
+        "SELECT Id, LastName, Kind, Score, AccountId FROM Contact WHERE Kind = 'Gold' AND Score = 1.5 AND Active = true"
+    )
+
+
+def test_a_lookup_leads_where_the_id_says():
+    org = query_org()
+    who = ForeignKey("Who", "uat", "Task", ("WhoId",), "uat", "Lead", ("Id",))
+    assert org.target_of(who, "003000000000000001AAA").name == "Contact"
+    assert org.target_of(who, "00Q000000000000001AAA").name == "Lead"  # unknown prefix: what the lookup says
+
+
+def test_related_counts_come_25_to_a_request():
+    org = query_org()
+    queries = [(Relation("uat", "Contact", "table"), {"Kind": "Gold"})] * 30 + [(Relation("uat", "AccountChangeEvent", "table"), {"Id": "x"})]
+    counts = dict(org.count_each(queries))
+    assert counts[0] == 150 and len(counts) == 30  # the change events can't be queried, so aren't counted
+    assert [call for call in org.api.calls if call.startswith("batch")] == ["batch of 25", "batch of 5"]
+
+
+def test_open_a_record_from_the_results(monkeypatch):
+    monkeypatch.setattr(app_module, "open_database", lambda target: query_org())
+    app = InspectorApp(detect("sf:uat"))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        app.query_panel.set_sql(CONTACT_QUERY)
+        app.action_query()
+        await pilot.press("ctrl+r")
+        await settle(pilot)
+        app.query_panel.grid.focus()
+        await pilot.press("down", "o")
+        await settle(pilot)
+        screen = app.screen
+        assert isinstance(screen, RecordScreen) and screen.values["LastName"] == "Name 001"
 
     run(app, scenario)

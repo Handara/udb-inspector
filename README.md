@@ -345,6 +345,11 @@ formula, and warns about SQL habits SOQL doesn't share: `*`, `JOIN`, `IS NULL`,
 `COUNT(*)`, double quotes, quoted dates, `FIELDS(ALL)` without `LIMIT 200`. F1
 has a SOQL cheat sheet.
 
+`o` opens a record with every field, fetched by its Id. A lookup opens the
+record it points at, and polymorphic ones (`WhoId`, `OwnerId`) go to the right
+object, read from the Id's first three characters. Its related lists are counted
+25 to a request, and `enter` on one queries those records.
+
 ## How the database type is detected
 
 | Target | Detection |

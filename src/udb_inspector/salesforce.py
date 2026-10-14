@@ -560,12 +560,61 @@ class SalesforceOrg:
             self._more(cursor, max(200, min(BATCH, needed - len(cursor.rows))))
         cursor.used = time.monotonic()
 
-    # Records and import come with their own steps.
+    # Records
+
+    def fetch_row(self, rel: Relation, where: dict[str, object]) -> tuple[list[str], tuple] | None:
+        """One record. By Id that's a single request for every field; otherwise a query."""
+        record_id = where.get("Id") if set(where) == {"Id"} else None
+        if isinstance(record_id, str):
+            try:
+                record = self.api.get(f"sobjects/{quote(rel.name)}/{quote(record_id)}")
+            except ApiError as exc:
+                if exc.status == 404:
+                    return None
+                raise
+            values = {key: _plain(value) for key, value in record.items() if key != "attributes"}
+            order = [field["name"] for field in self.describe_object(rel.name)["fields"]]
+            columns = [name for name in order if name in values] + [name for name in values if name not in order]
+            return columns, tuple(values[name] for name in columns)
+        result = self.run_query(f"{self.select_sql(rel, where)} LIMIT 1", max_rows=1)
+        return (result.columns, result.rows[0]) if result.rows else None
+
+    def count_rows(self, rel: Relation, where: dict[str, object]) -> int:
+        return self.run_query(f"SELECT COUNT() FROM {rel.name} WHERE {_conditions(where)}").rows[0][0]
+
+    def count_each(self, queries: list[tuple[Relation, dict[str, object]]]) -> Iterator[tuple[int, int]]:
+        """The counts for a record's related lists, 25 to a request (Salesforce's composite batch)."""
+        queryable = {raw["name"].lower() for raw in self.objects() if raw.get("queryable")}
+        wanted = [(index, rel, where) for index, (rel, where) in enumerate(queries) if rel.name.lower() in queryable]
+        for start in range(0, len(wanted), 25):
+            chunk = wanted[start : start + 25]
+            requests = [
+                {"method": "GET", "url": f"v{self.api.version}/query?q={quote(f'SELECT COUNT() FROM {rel.name} WHERE {_conditions(where)}')}"}
+                for _, rel, where in chunk
+            ]
+            reply = self.api.request("POST", self.api.data_path("composite/batch"), {"batchRequests": requests})
+            for (index, _, _), result in zip(chunk, reply.get("results") or []):
+                if result.get("statusCode") == 200:
+                    yield index, result["result"]["totalSize"]
+
+    def target_of(self, fk: ForeignKey, value: object) -> Relation:
+        """The object an Id belongs to, from its first three characters (the object's key prefix)."""
+        if isinstance(value, str) and len(value) >= 15:
+            prefix = value[:3]
+            owner = next((raw["name"] for raw in self.objects() if raw.get("keyPrefix") == prefix), None)
+            if owner:
+                return Relation(fk.ref_schema, owner, "object")
+        return Relation(fk.ref_schema, fk.ref_table, "object")
+
+    def select_sql(self, rel: Relation, where: dict[str, object]) -> str:
+        return f"{self.browse_sql(rel)} WHERE {_conditions(where)}"
+
+    # Import comes with its own step.
 
     def _not_yet(self, *args, **kwargs):
-        raise QueryError("This isn't supported for Salesforce yet.")
+        raise QueryError("Importing into Salesforce isn't supported yet.")
 
-    fetch_row = count_rows = select_sql = import_columns = write_rows = _not_yet
+    import_columns = write_rows = _not_yet
 
 
 @dataclass
@@ -586,6 +635,20 @@ class _Cursor:
         else:
             items = [item for item in self.query.items if item.kind != "count"]
             self.rows += [tuple(_value(record, item.path) for item in items) for record in records]
+
+
+def _conditions(where: dict[str, object]) -> str:
+    return " AND ".join(f"{name} = {_soql_value(value)}" for name, value in where.items())
+
+
+def _soql_value(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float, Decimal)):
+        return str(value)
+    return soql.literal(str(value))
 
 
 def _batch(size: int) -> dict[str, str]:

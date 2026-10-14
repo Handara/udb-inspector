@@ -470,6 +470,18 @@ class Database:
             except DBAPIError as exc:
                 raise QueryError(str(exc.orig).strip()) from None
 
+    def count_each(self, queries: list[tuple[Relation, dict[str, object]]]) -> Iterator[tuple[int, int]]:
+        """count_rows for each (relation, where), as (index, count) when it's known; failures are left out."""
+        for index, (rel, where) in enumerate(queries):
+            try:
+                yield index, self.count_rows(rel, where)
+            except QueryError:
+                continue
+
+    def target_of(self, fk: ForeignKey, value: object) -> Relation:
+        """The table a foreign key's value points into."""
+        return Relation(fk.ref_schema, fk.ref_table, "table")
+
     def select_sql(self, rel: Relation, where: dict[str, object]) -> str:
         """SELECT * … WHERE col = value with the values written out, for the query editor."""
         statement = self._where(f"SELECT * FROM {self.quoted_name(rel)}", where)

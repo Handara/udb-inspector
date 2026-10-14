@@ -33,6 +33,7 @@ class RecordScreen(ModalScreen[None]):
         self.row = row
         self.values: dict[str, object] = {}
         self.outgoing: dict[str, ForeignKey] = {}  # column -> foreign key it belongs to
+        self.targets: dict[str, Relation] = {}  # column -> the table its value points into
         self.incoming: list[ForeignKey] = []
 
     def compose(self) -> ComposeResult:
@@ -75,23 +76,32 @@ class RecordScreen(ModalScreen[None]):
                 fk for fk in (db.referenced_by(self.rel) if self.rel.kind != "view" else [])
                 if _incoming_where(fk, values) is not None
             ]
+            # A Salesforce lookup can point at several objects; the value says which.
+            targets = {
+                column: db.target_of(fk, values[column])
+                for fk in details.foreign_keys
+                for column in fk.columns
+                if values.get(column) is not None
+            }
         except Exception as exc:
             self.app.call_from_thread(self._failed, str(exc))
             return
-        self.app.call_from_thread(self._show, details, values, incoming, note)
-        for index, fk in enumerate(incoming):
-            try:
-                count = db.count_rows(Relation(fk.schema, fk.table, "table"), _incoming_where(fk, values))
-            except QueryError:
-                continue
-            self.app.call_from_thread(self._show_count, index, count)
+        self.app.call_from_thread(self._show, details, values, incoming, targets, note)
+        queries = [(Relation(fk.schema, fk.table, "table"), _incoming_where(fk, values)) for fk in incoming]
+        try:
+            for index, count in db.count_each(queries):
+                self.app.call_from_thread(self._show_count, index, count)
+        except QueryError:
+            pass  # the counts stay "…"
 
     def _failed(self, message: str) -> None:
         self.query_one(DataTable).loading = False
         self.query_one("#record-note", Static).update(Text(message, style="red"))
 
-    def _show(self, details: TableDetails, values: dict[str, object], incoming: list[ForeignKey], note: str | None) -> None:
-        self.values, self.incoming = values, incoming
+    def _show(
+        self, details: TableDetails, values: dict[str, object], incoming: list[ForeignKey], targets: dict[str, Relation], note: str | None
+    ) -> None:
+        self.values, self.incoming, self.targets = values, incoming, targets
         self.outgoing = {column: fk for fk in details.foreign_keys for column in fk.columns}
         table = self.query_one(DataTable)
         table.loading = False
@@ -107,9 +117,9 @@ class RecordScreen(ModalScreen[None]):
         primary = set(keys)
         for name, value in values.items():
             link = ""
-            fk = self.outgoing.get(name)
-            if fk is not None and value is not None:
-                link = Text(f"→ {qualified(fk.ref_schema, fk.ref_table, self.rel.schema)}", style="cyan")
+            target = self.targets.get(name)
+            if target is not None:
+                link = Text(f"→ {qualified(target.schema, target.name, self.rel.schema)}", style="cyan")
             table.add_row(Text(name, style="bold" if name in primary else ""), types.get(name, ""), cell(value), link, key=f"field:{name}")
         if incoming:
             table.add_row("", "", "", "", key="gap")
@@ -127,9 +137,8 @@ class RecordScreen(ModalScreen[None]):
         key = event.row_key.value or ""
         if key.startswith("field:"):
             name = key.removeprefix("field:")
-            fk = self.outgoing.get(name)
-            if fk is not None and self.values.get(name) is not None:
-                target = Relation(fk.ref_schema, fk.ref_table, "table")
+            fk, target = self.outgoing.get(name), self.targets.get(name)
+            if fk is not None and target is not None:
                 where = {ref: self.values.get(column) for column, ref in zip(fk.columns, fk.ref_columns)}
                 self.app.push_screen(RecordScreen(target, where=where))
             else:
