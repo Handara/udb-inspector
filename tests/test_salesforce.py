@@ -1,6 +1,7 @@
 """Salesforce through the sf CLI, against canned replies: no org is contacted."""
 
 import asyncio
+import datetime
 import io
 import re
 import tomllib
@@ -13,7 +14,7 @@ from textual.widgets import OptionList
 
 from udb_inspector import salesforce
 from udb_inspector.connections import global_dir, resolve
-from udb_inspector.database import ConnectError, ForeignKey, QueryError, Relation
+from udb_inspector.database import ConnectError, ForeignKey, QueryError, Relation, WritesNotAllowed
 from udb_inspector.detect import detect
 from udb_inspector.salesforce import Api, ApiError, SalesforceOrg, SfError, SfOrg, field_type, list_orgs
 from udb_inspector.sql import ReadOnlyError
@@ -571,5 +572,182 @@ def test_open_a_record_from_the_results(monkeypatch):
         await settle(pilot)
         screen = app.screen
         assert isinstance(screen, RecordScreen) and screen.values["LastName"] == "Name 001"
+
+    run(app, scenario)
+
+
+# Import, into a simulated custom object through the sObject Collections API
+
+TICKET = {
+    "name": "Ticket__c",
+    "fields": [
+        {"name": "Id", "type": "id", "nillable": False},
+        {"name": "Name", "type": "string", "length": 80, "createable": True, "updateable": True, "nillable": False},
+        {"name": "Code__c", "type": "string", "length": 20, "createable": True, "updateable": True, "nillable": True, "externalId": True},
+        {"name": "Amount__c", "type": "currency", "precision": 18, "scale": 2, "createable": True, "updateable": True, "nillable": True},
+        {"name": "Due__c", "type": "date", "createable": True, "updateable": True, "nillable": True},
+        {"name": "Open__c", "type": "boolean", "createable": True, "updateable": True, "nillable": False, "defaultedOnCreate": True},
+        {"name": "Total__c", "type": "currency", "calculated": True, "calculatedFormula": "Amount__c * 2", "nillable": True},
+        {"name": "CreatedDate", "type": "datetime", "nillable": False},
+    ],
+    "childRelationships": [],
+}
+
+
+class ImportApi(QueryApi):
+    def __init__(self, org):
+        super().__init__(org)
+        self.tickets = {}
+        self.bodies = []
+
+    def get(self, path):
+        return TICKET if path == "sobjects/Ticket__c/describe" else super().get(path)
+
+    def request(self, method, path, body=None, *, headers=None):
+        if "FROM Ticket__c" in unquote(path):
+            field, values = re.search(r"WHERE (\w+) IN \((.*)\)", unquote(path)).groups()
+            wanted = {value.strip(" '").lower() for value in values.split(",")}
+            records = [{"attributes": {}, **t} for t in self.tickets.values() if str(t.get(field, "")).lower() in wanted]
+            return {"totalSize": len(records), "done": True, "records": records}
+        if "/composite/sobjects" not in path:
+            return super().request(method, path, body, headers=headers)
+        self.bodies.append((method, path, body))
+        if method == "DELETE":
+            ids = unquote(path.split("ids=", 1)[1].split("&")[0]).split(",")
+            return [self._result(self.tickets.pop(i, None) is not None, i, "ENTITY_IS_DELETED") for i in ids]
+        results = []
+        for record in body["records"]:
+            fields = {k: v for k, v in record.items() if k != "attributes"}
+            if path.endswith("/Ticket__c/Code__c"):
+                match = next((t for t in self.tickets.values() if t.get("Code__c") == fields["Code__c"]), None)
+                if match:
+                    match.update(fields)
+                    results.append({**self._result(True, match["Id"]), "created": False})
+                    continue
+                results.append({**self._create(fields), "created": True})
+            elif method == "PATCH":
+                found = fields.pop("Id") in self.tickets and self.tickets[record["Id"]]
+                if found:
+                    found.update(fields)
+                results.append(self._result(bool(found), record["Id"], "ENTITY_IS_DELETED"))
+            else:
+                results.append(self._create(fields))
+        return results
+
+    def _create(self, fields):
+        if any(t.get("Name") == fields.get("Name") for t in self.tickets.values()):
+            return self._result(False, None, "DUPLICATE_VALUE")
+        new_id = f"a01{len(self.tickets) + 1:015}"
+        self.tickets[new_id] = {"Id": new_id, **fields}
+        return self._result(True, new_id)
+
+    @staticmethod
+    def _result(success, record_id, code="ERROR"):
+        return {"id": record_id, "success": success, "errors": [] if success else [{"statusCode": code, "message": f"{code.lower()} here", "fields": []}]}
+
+
+def import_org(allow_writes=True):
+    org = SalesforceOrg(salesforce.salesforce_target("uat", "test", allow_writes))
+    org.api = ImportApi("uat")
+    return org
+
+
+TICKETS = Relation("uat", "Ticket__c", "object")
+
+
+def run_import(org, operation, key, pasted):
+    from udb_inspector.importing import parse_pasted, plan
+
+    planned = plan(parse_pasted(pasted), org.import_columns(TICKETS), operation, key)
+    return planned, org.write_rows(TICKETS, operation, key, planned.ready)
+
+
+def test_import_columns():
+    columns = {column.name: column for column in import_org().import_columns(TICKETS)}
+    assert list(columns) == ["Id", "Name", "Code__c", "Amount__c", "Due__c", "Open__c"]  # no formula, no system fields
+    assert columns["Id"].primary_key and columns["Id"].generated
+    assert not columns["Name"].nullable and not columns["Name"].has_default
+    assert columns["Open__c"].has_default and columns["Amount__c"].type_name == "Currency(16, 2)"
+
+
+def test_insert():
+    org = import_org()
+    planned, report = run_import(org, "insert", [], "Name\tCode__c\tAmount__c\tDue__c\nFirst\tC1\t1,234.50\t2026-01-31\nFirst\tC2\t\t\n\tC3\t\t\n")
+    assert [row.problem for row in planned.rejected] == ["Name is required"]
+    assert report.inserted == 1 and [(f.line, f.error) for f in report.failures] == [(3, "DUPLICATE_VALUE: duplicate_value here")]
+    method, path, body = org.api.bodies[0]
+    assert (method, path) == ("POST", "/services/data/v62.0/composite/sobjects") and body["allOrNone"] is False
+    assert body["records"][0] == {"attributes": {"type": "Ticket__c"}, "Name": "First", "Code__c": "C1", "Amount__c": 1234.5, "Due__c": "2026-01-31"}
+
+
+def test_update_by_another_field_looks_up_the_ids():
+    org = import_org()
+    run_import(org, "insert", [], "Name\tCode__c\nFirst\tC1\nSecond\tC2\n")
+    _, report = run_import(org, "update", ["Code__c"], "Code__c\tAmount__c\nc1\t5\nC9\t6\n")
+    assert report.updated == 1 and report.failures[0].error == "No record with Code__c = 'C9'."
+    assert org.api.tickets["a01000000000000001"]["Amount__c"] == 5
+
+
+def test_upsert_by_external_id():
+    org = import_org()
+    run_import(org, "insert", [], "Name\tCode__c\nFirst\tC1\n")
+    _, report = run_import(org, "upsert", ["Code__c"], "Code__c\tName\nC1\tRenamed\nC5\tFifth\n")
+    assert (report.updated, report.inserted) == (1, 1)
+    assert org.api.bodies[-1][1] == "/services/data/v62.0/composite/sobjects/Ticket__c/Code__c"
+    with pytest.raises(QueryError, match="Name isn't one"):
+        run_import(org, "upsert", ["Name"], "Name\tCode__c\nFirst\tC1\n")
+
+
+def test_delete():
+    org = import_org()
+    run_import(org, "insert", [], "Name\nFirst\nSecond\n")
+    _, report = run_import(org, "delete", ["Id"], "Id\na01000000000000001\na01000000000000099\n")
+    assert report.deleted == 1 and report.failures[0].error.startswith("ENTITY_IS_DELETED")
+    assert list(org.api.tickets) == ["a01000000000000002"]
+
+
+def test_import_needs_writes_allowed():
+    with pytest.raises(WritesNotAllowed):
+        run_import(import_org(allow_writes=False), "insert", [], "Name\nFirst\n")
+
+
+def test_values_for_the_api():
+    from udb_inspector.salesforce import _json_value
+
+    assert _json_value(Decimal("12.00"), None) == 12 and _json_value(Decimal("1.5"), None) == 1.5
+    assert _json_value(datetime.date(2026, 1, 31), None) == "2026-01-31"
+    assert _json_value(datetime.time(9, 5), None) == "09:05:00.000Z"
+    sent = _json_value(datetime.datetime(2026, 1, 31, 9, 5), None)
+    assert sent.startswith("2026-01-31T09:05:00") and sent[19] in "+-"  # this machine's zone, spelled out
+
+
+def test_import_from_the_tab(monkeypatch):
+    class WithTickets(ImportApi):
+        def get(self, path):
+            if path == "sobjects/":
+                return {"sobjects": [{"name": "Ticket__c", "queryable": True, "custom": True, "keyPrefix": "a01"}]}
+            return super().get(path)
+
+    org = SalesforceOrg(salesforce.salesforce_target("uat", "test", True))
+    org.api = WithTickets("uat")
+    monkeypatch.setattr(app_module, "open_database", lambda target: org)
+    app = InspectorApp(detect("sf:uat"))
+
+    async def scenario(pilot):
+        from textual import events
+
+        await settle(pilot)
+        await pilot.press("down", "f4")
+        await settle(pilot)
+        app.focused.post_message(events.Paste("Name\tAmount__c\tTotal__c\nFirst\t12.50\t25\nFirst\t3\t\n"))
+        await settle(pilot)
+        summary = str(app.import_panel.query_one("#import-summary").content)
+        assert "ignored (no such column): Total__c" in summary  # a formula can't be written
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen) and "Insert 2 rows into Ticket__c" in app.screen.question
+        await pilot.press("y")
+        await settle(pilot)
+        assert "1 inserted  |  1 failed" in str(app.import_panel.query_one("#import-result").content)
 
     run(app, scenario)

@@ -7,6 +7,7 @@ Orgs are addressed as sf:ALIAS (or sf:USERNAME).
 
 from __future__ import annotations
 
+import datetime
 import gzip
 import http.client
 import json
@@ -27,7 +28,25 @@ from urllib.parse import quote, urlsplit
 from sqlalchemy.engine import URL
 
 from . import soql
-from .database import MAX_ROWS, Column, ConnectError, ForeignKey, Key, Page, QueryError, QueryResult, Relation, ServerInfo, TableDetails
+from sqlalchemy.types import Boolean, Date, DateTime, Integer, Numeric, String, Time
+
+from .database import (
+    GIVE_UP_AFTER,
+    MAX_ROWS,
+    Column,
+    ConnectError,
+    ForeignKey,
+    ImportReport,
+    Key,
+    Page,
+    QueryError,
+    QueryResult,
+    Relation,
+    RowFailure,
+    ServerInfo,
+    TableDetails,
+    WritesNotAllowed,
+)
 from .detect import Target
 
 SF_TIMEOUT = 90  # seconds; sf may refresh a token over the network
@@ -39,6 +58,9 @@ CURSORS_KEPT = 8
 # setup picklists); those are dropped from the search when it says so.
 SEARCHABLE = {"string", "textarea", "email", "phone", "url", "picklist", "combobox"}
 ERROR_POSITION = re.compile(r"Row:(\d+):Column:(\d+)")
+# How pasted cells are read for each field type (see importing.convert).
+IMPORT_TYPES = {"boolean": Boolean, "int": Integer, "long": Integer, "double": Numeric, "currency": Numeric,
+                "percent": Numeric, "date": Date, "datetime": DateTime, "time": Time}
 
 
 class SfError(ConnectError):
@@ -609,12 +631,93 @@ class SalesforceOrg:
     def select_sql(self, rel: Relation, where: dict[str, object]) -> str:
         return f"{self.browse_sql(rel)} WHERE {_conditions(where)}"
 
-    # Import comes with its own step.
+    # Import, through the sObject Collections API: 200 records a request, and a
+    # result for each, so a record that fails doesn't stop the others.
 
-    def _not_yet(self, *args, **kwargs):
-        raise QueryError("Importing into Salesforce isn't supported yet.")
+    def import_columns(self, rel: Relation):
+        from .importing import ColumnInfo
 
-    import_columns = write_rows = _not_yet
+        columns = []
+        for meta in self.describe_object(rel.name)["fields"]:
+            writable = meta.get("createable") or meta.get("updateable")
+            if meta.get("deprecatedAndHidden") or not (writable or meta["type"] == "id" or meta.get("externalId")):
+                continue  # formulas, roll-ups, system fields
+            columns.append(
+                ColumnInfo(
+                    name=meta["name"],
+                    type=IMPORT_TYPES.get(meta["type"], String)(),
+                    type_name=field_type(meta),
+                    nullable=bool(meta.get("nillable")),
+                    has_default=bool(meta.get("defaultedOnCreate")) or not meta.get("createable"),
+                    primary_key=meta["type"] == "id",
+                    generated=not meta.get("createable"),  # Id, and fields only an update may set
+                )
+            )
+        return columns
+
+    def write_rows(self, rel: Relation, operation: str, key: list[str], rows, progress=None) -> ImportReport:
+        if not self.target.allow_writes:
+            raise WritesNotAllowed("This connection doesn't allow writes.")
+        meta = {field["name"]: field for field in self.describe_object(rel.name)["fields"]}
+        if operation != "insert" and len(key) != 1:
+            raise QueryError("Salesforce matches records by one field: Id, or an external Id field for upsert.")
+        if operation == "upsert" and key != ["Id"] and not (meta.get(key[0]) or {}).get("externalId"):
+            raise QueryError(f"Upsert matches records by Id or an external Id field, and {key[0]} isn't one.")
+        report, done = ImportReport(), 0
+        rows = list(rows)
+        for start in range(0, len(rows), 200):
+            chunk = rows[start : start + 200]
+            if operation in ("update", "delete") and key != ["Id"]:
+                chunk = self._with_ids(rel, key[0], chunk, report)
+            self._write_chunk(rel, operation, key, chunk, meta, report)
+            done += len(rows[start : start + 200])
+            if progress is not None:
+                progress(done)
+            if report.written == 0 and len(report.failures) >= GIVE_UP_AFTER:
+                report.stopped = f"Stopped after the first {len(report.failures)} rows all failed: {report.failures[-1].error}"
+                break
+        return report
+
+    def _with_ids(self, rel: Relation, key: str, rows, report: ImportReport) -> list:
+        """Update and delete need Ids: look them up by the key, one query for the lot."""
+        found: dict[object, list[str]] = {}
+        values = ", ".join(_soql_value(row.values[key]) for row in rows)
+        for record in self.run_query(f"SELECT Id, {key} FROM {rel.name} WHERE {key} IN ({values})", max_rows=10_000).rows:
+            found.setdefault(_match_key(record[1]), []).append(record[0])
+        ready = []
+        for row in rows:
+            ids = found.get(_match_key(row.values[key]), [])
+            if len(ids) == 1:
+                ready.append(replace(row, values={**{k: v for k, v in row.values.items() if k != key}, "Id": ids[0]}))
+            else:
+                problem = f"No record with {key} = {row.values[key]!r}." if not ids else f"{len(ids)} records have {key} = {row.values[key]!r}; match them by Id."
+                report.failures.append(RowFailure(row.line, row.cells, problem))
+        return ready
+
+    def _write_chunk(self, rel: Relation, operation: str, key: list[str], rows, meta: dict, report: ImportReport) -> None:
+        if not rows:
+            return
+        if operation == "delete":
+            ids = ",".join(quote(str(row.values["Id"])) for row in rows)
+            results = self.api.request("DELETE", self.api.data_path(f"composite/sobjects?ids={ids}&allOrNone=false"))
+        else:
+            records = [{"attributes": {"type": rel.name}, **{name: _json_value(value, meta.get(name)) for name, value in row.values.items()}} for row in rows]
+            body = {"allOrNone": False, "records": records}
+            if operation == "insert":
+                results = self.api.request("POST", self.api.data_path("composite/sobjects"), body)
+            elif operation == "update":
+                results = self.api.request("PATCH", self.api.data_path("composite/sobjects"), body)
+            else:
+                results = self.api.request("PATCH", self.api.data_path(f"composite/sobjects/{quote(rel.name)}/{quote(key[0])}"), body)
+        for row, result in zip(rows, results or []):
+            if result.get("success"):
+                outcome = {"insert": "inserted", "update": "updated", "delete": "deleted"}.get(operation)
+                outcome = outcome or ("inserted" if result.get("created") else "updated")
+                setattr(report, outcome, getattr(report, outcome) + 1)
+            else:
+                errors = result.get("errors") or [{}]
+                message = "; ".join(f"{e.get('statusCode', 'ERROR')}: {e.get('message', '')}".strip() for e in errors)
+                report.failures.append(RowFailure(row.line, row.cells, message.splitlines()[0]))
 
 
 @dataclass
@@ -649,6 +752,25 @@ def _soql_value(value: object) -> str:
     if isinstance(value, (int, float, Decimal)):
         return str(value)
     return soql.literal(str(value))
+
+
+def _json_value(value: object, meta: dict | None):
+    """A converted cell as the REST API wants it."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, datetime.datetime):
+        # Without a zone, a time is this machine's local time, as it would be typed into Salesforce.
+        return (value if value.tzinfo else value.astimezone()).isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    if isinstance(value, datetime.time):
+        return value.isoformat(timespec="milliseconds") + "Z"
+    return value
+
+
+def _match_key(value: object) -> object:
+    """SOQL's = ignores case for text; so does matching looked-up records to rows."""
+    return value.lower() if isinstance(value, str) else str(value)
 
 
 def _batch(size: int) -> dict[str, str]:

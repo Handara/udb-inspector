@@ -350,6 +350,16 @@ record it points at, and polymorphic ones (`WhoId`, `OwnerId`) go to the right
 object, read from the Id's first three characters. Its related lists are counted
 25 to a request, and `enter` on one queries those records.
 
+The Import tab writes through the sObject Collections API, 200 records to a
+request, each succeeding or failing on its own with Salesforce's message.
+Formula, roll-up and system fields aren't offered. Update and delete match
+records by `Id`, or by another field, whose Ids udbi looks up first (a value
+matching no record, or several, fails that row). Upsert matches by `Id` or an
+external Id field. A date and time without a zone is taken as this computer's
+local time. Like any connection, an org only takes imports once writes are
+allowed on it, and every import asks first. Remember that inserts and updates
+run the org's triggers and flows.
+
 ## How the database type is detected
 
 | Target | Detection |
