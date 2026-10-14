@@ -11,21 +11,34 @@ import gzip
 import http.client
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
+import time
+from collections import OrderedDict
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from urllib.parse import quote, urlsplit
 
 from sqlalchemy.engine import URL
 
-from .database import Column, ConnectError, ForeignKey, Key, QueryError, Relation, ServerInfo, TableDetails
+from . import soql
+from .database import MAX_ROWS, Column, ConnectError, ForeignKey, Key, Page, QueryError, QueryResult, Relation, ServerInfo, TableDetails
 from .detect import Target
 
 SF_TIMEOUT = 90  # seconds; sf may refresh a token over the network
 HTTP_TIMEOUT = 120
 DEFAULT_API_VERSION = "62.0"
+BATCH = 2000  # the most records Salesforce hands out per request
+CURSORS_KEPT = 8
+# Field types LIKE works on. Salesforce still refuses it on a few of them (some
+# setup picklists); those are dropped from the search when it says so.
+SEARCHABLE = {"string", "textarea", "email", "phone", "url", "picklist", "combobox"}
+ERROR_POSITION = re.compile(r"Row:(\d+):Column:(\d+)")
 
 
 class SfError(ConnectError):
@@ -203,7 +216,7 @@ class Api:
         if response.getheader("Content-Encoding") == "gzip":
             raw = gzip.decompress(raw)
         try:
-            payload = json.loads(raw) if raw else None
+            payload = json.loads(raw, parse_float=Decimal) if raw else None  # currency stays exact
         except json.JSONDecodeError:
             payload = raw.decode(errors="replace")[:300]
         return response.status, payload
@@ -246,6 +259,11 @@ class SalesforceOrg:
         self.api = Api(self.org)
         self._objects: list[dict] | None = None
         self._describes: dict[str, dict] = {}
+        self._lock = threading.RLock()  # the query and the count arrive from two threads
+        self._cursors: OrderedDict[str, _Cursor] = OrderedDict()
+        self._totals: dict[tuple[str, str], int] = {}
+        self._like_refused: set[str] = set()  # "object:field": searched with = instead
+        self._unsearchable: set[str] = set()  # "object:field": refused = too
 
     def close(self) -> None:
         self.api.close()
@@ -253,6 +271,8 @@ class SalesforceOrg:
     def clear_cache(self) -> None:
         self._objects = None
         self._describes.clear()
+        self._cursors.clear()
+        self._totals.clear()
 
     def server_info(self) -> ServerInfo:
         try:
@@ -334,13 +354,283 @@ class SalesforceOrg:
     def quoted_name(self, rel: Relation) -> str:
         return rel.name  # SOQL names are never quoted
 
-    # Querying comes with SOQL support.
+    def quote_identifier(self, name: str) -> str:
+        return name
 
-    def _no_soql(self, *args, **kwargs):
-        raise QueryError("Querying Salesforce isn't supported yet.")
+    def browse_sql(self, rel: Relation) -> str:
+        """SOQL has no SELECT *: every field that can be listed, in the object's order."""
+        fields = [
+            field["name"]
+            for field in self.describe_object(rel.name)["fields"]
+            if field["type"] not in ("address", "location", "base64") and not field.get("deprecatedAndHidden")
+        ]
+        chosen, length = [], 0
+        for name in fields:  # a GET carries the query: stay well under its length limit
+            if length + len(name) > 8000:
+                break
+            chosen.append(name)
+            length += len(name) + 2
+        return f"SELECT {', '.join(chosen)} FROM {rel.name}"
 
-    run_query = fetch_page = count_matching = filtered_sql = stream_query = _no_soql
-    fetch_row = count_rows = select_sql = import_columns = write_rows = _no_soql
+    # Querying. Salesforce runs a query once and hands its records out through a
+    # cursor, up to 2,000 at a time, and says up front how many there are. A page is
+    # read from the records fetched so far, fetching more as needed.
+
+    def forget(self, sql: str) -> None:
+        """Running a query again asks Salesforce again, instead of reusing its cursors."""
+        query = soql.parse(sql)
+        if query is None:
+            return
+        with self._lock:
+            for statement, cursor in list(self._cursors.items()):
+                if cursor.query.text == query.text:
+                    del self._cursors[statement]
+            for key in [key for key in self._totals if key[0] == query.text]:
+                del self._totals[key]
+
+    def run_query(self, sql: str, max_rows: int = MAX_ROWS) -> QueryResult:
+        query = self._parse(sql)
+        started = time.perf_counter()
+        with self._lock:
+            cursor = self._open(query, query.text, max_rows + 1)
+            if query.counts_only:
+                return QueryResult(sql, ["count"], [(cursor.total,)], False, time.perf_counter() - started)
+            self._fill(cursor, max_rows + 1)
+        rows = cursor.rows[:max_rows]
+        truncated = len(cursor.rows) > max_rows or cursor.next_url is not None
+        return QueryResult(sql, cursor.columns, rows, truncated, time.perf_counter() - started)
+
+    def fetch_page(self, sql: str, *, offset: int, limit: int, sort=None, search: str = "", columns=()) -> Page | None:
+        query = soql.parse(sql)
+        if query is None or not query.pageable:
+            return None  # run as typed, up to MAX_ROWS
+        soql.check_read_only(query)
+        started = time.perf_counter()
+        with self._lock:
+            cursor = self._paged_cursor(query, sort, search, offset + limit + 1)
+            self._fill(cursor, offset + limit + 1)
+        rows = cursor.rows[offset : offset + limit]
+        has_more = len(cursor.rows) > offset + limit or cursor.next_url is not None
+        return Page(cursor.columns, rows, has_more, time.perf_counter() - started, cursor.statement)
+
+    def count_matching(self, sql: str, *, search: str = "", columns=()) -> int | None:
+        query = soql.parse(sql)
+        if query is None or not query.pageable:
+            return None
+        with self._lock:
+            known = self._totals.get((query.text, search))
+            if known is not None:
+                return known
+            return self._paged_cursor(query, None, search, 1).total
+
+    def filtered_sql(self, sql: str, *, sort, search: str, columns) -> str:
+        query = soql.parse(sql)
+        if query is None or not query.pageable:
+            return sql
+        with self._lock:
+            return self._paged_cursor(query, sort, search, 1).statement
+
+    @contextmanager
+    def stream_query(self, sql: str, batch_size: int = 1000) -> Iterator[tuple[list[str], Iterator[list[tuple]]]]:
+        """Every record, batch by batch, for export."""
+        query = self._parse(sql)
+        cursor = self._start(query, query.text, BATCH)
+        if query.counts_only:
+            yield ["count"], iter([[(cursor.total,)]])
+            return
+
+        def batches() -> Iterator[list[tuple]]:
+            while True:
+                rows, cursor.rows = cursor.rows, []  # exported rows needn't stay in memory
+                yield rows
+                if cursor.next_url is None:
+                    return
+                self._more(cursor, BATCH)
+
+        yield cursor.columns, batches()
+
+    def _parse(self, sql: str) -> soql.Query:
+        query = soql.parse(sql)
+        if query is None:
+            raise QueryError("Salesforce takes SOQL: SELECT fields FROM object …")
+        soql.check_read_only(query)
+        return query
+
+    def _paged_cursor(self, query: soql.Query, sort, search: str, needed: int) -> _Cursor:
+        """The cursor for the query with this sort and search, opened if need be."""
+        for _ in range(20):  # each round drops a field Salesforce won't search
+            statement, terms = self._rewritten(query, sort, search)
+            try:
+                cursor = self._open(query, statement, needed)
+            except ApiError as exc:
+                path = _rejected_term(exc, statement, terms) if search else None
+                if path is None:
+                    raise
+                key = (query.object or "").lower() + ":" + path.lower()
+                # Refused LIKE: try an exact match on it instead. Refused that too: leave it out.
+                (self._unsearchable if key in self._like_refused else self._like_refused).add(key)
+                continue
+            self._totals[(query.text, search)] = cursor.total
+            return cursor
+        raise QueryError("Salesforce turned down searching every field of this query.")
+
+    def _rewritten(self, query: soql.Query, sort, search: str) -> tuple[str, dict[str, str]]:
+        """The query with its search added as WHERE and its sort as ORDER BY."""
+        statement, terms = query.text, {}
+        if search:
+            pattern, exact = soql.like_pattern(search), soql.literal(search)
+            paths = self._searchable(query)
+            if not paths:
+                raise QueryError("None of these fields can be searched: Salesforce's LIKE works on text fields only.")
+            refused = {path for path in paths if f"{(query.object or '').lower()}:{path.lower()}" in self._like_refused}
+            terms = {path: f"{path} = {exact}" if path in refused else f"{path} LIKE {pattern}" for path in paths}
+            statement = soql.with_condition(soql.parse(statement), " OR ".join(terms.values()))
+        if sort:
+            column, descending = sort
+            item = next((item for item in query.fields() if item.column.lower() == column.lower()), None)
+            if item is None or item.text != ".".join(item.path):
+                raise QueryError(f"Salesforce sorts by fields, and {column} isn't one of the query's fields.")
+            statement = soql.with_order(soql.parse(statement), item.text, descending)
+        return statement, terms
+
+    def _searchable(self, query: soql.Query) -> list[str]:
+        paths = []
+        for item in query.fields():
+            if item.text != ".".join(item.path):
+                continue  # toLabel(…), FORMAT(…)
+            key = (query.object or "").lower() + ":" + item.text.lower()
+            meta = self._field_at(query.object, item.path)
+            if key not in self._unsearchable and meta and meta.get("filterable") and meta.get("type") in SEARCHABLE:
+                paths.append(item.text)
+        return paths
+
+    def _field_at(self, obj: str | None, path: tuple[str, ...]) -> dict | None:
+        """The describe of the field a path like Account.Owner.Name ends at."""
+        try:
+            for part in path[:-1]:
+                if obj is None:
+                    return None
+                fields = self.describe_object(obj)["fields"]
+                lookup = next((f for f in fields if (f.get("relationshipName") or "").lower() == part.lower()), None)
+                targets = (lookup or {}).get("referenceTo") or []
+                obj = targets[0] if len(targets) == 1 else None
+            if obj is None:
+                return None
+            return next((f for f in self.describe_object(obj)["fields"] if f["name"].lower() == path[-1].lower()), None)
+        except QueryError:
+            return None
+
+    def _open(self, query: soql.Query, statement: str, needed: int) -> _Cursor:
+        cursor = self._cursors.get(statement)
+        if cursor is None or time.monotonic() - cursor.used > 600:  # Salesforce drops idle cursors after 15 minutes
+            cursor = self._start(query, statement, max(200, min(BATCH, needed)))
+            self._cursors[statement] = cursor
+            while len(self._cursors) > CURSORS_KEPT:
+                self._cursors.popitem(last=False)
+        self._cursors.move_to_end(statement)
+        return cursor
+
+    def _start(self, query: soql.Query, statement: str, batch: int) -> _Cursor:
+        resource = "queryAll" if soql.all_rows(query) else "query"
+        sent = soql.without(soql.parse(statement), "ALL") if resource == "queryAll" else statement
+        reply = self.api.request("GET", self.api.data_path(f"{resource}?q={quote(sent)}"), headers=_batch(batch))
+        records = reply.get("records") or []
+        if query.discovers_columns:
+            columns = list(dict.fromkeys(key for record in records for key in _flatten(record)))
+        else:
+            columns = [item.column for item in query.items if item.kind != "count"]
+        cursor = _Cursor(statement, query, columns, [], reply.get("nextRecordsUrl"), reply.get("totalSize", len(records)))
+        cursor.add(records)
+        return cursor
+
+    def _more(self, cursor: _Cursor, batch: int) -> None:
+        reply = self.api.request("GET", cursor.next_url, headers=_batch(batch))
+        cursor.next_url = reply.get("nextRecordsUrl")
+        cursor.add(reply.get("records") or [])
+
+    def _fill(self, cursor: _Cursor, needed: int) -> None:
+        while len(cursor.rows) < needed and cursor.next_url is not None:
+            self._more(cursor, max(200, min(BATCH, needed - len(cursor.rows))))
+        cursor.used = time.monotonic()
+
+    # Records and import come with their own steps.
+
+    def _not_yet(self, *args, **kwargs):
+        raise QueryError("This isn't supported for Salesforce yet.")
+
+    fetch_row = count_rows = select_sql = import_columns = write_rows = _not_yet
+
+
+@dataclass
+class _Cursor:
+    """A query Salesforce is handing out, and the records fetched so far."""
+
+    statement: str
+    query: soql.Query
+    columns: list[str]
+    rows: list[tuple]
+    next_url: str | None
+    total: int
+    used: float = field(default_factory=time.monotonic)
+
+    def add(self, records: list[dict]) -> None:
+        if self.query.discovers_columns:
+            self.rows += [tuple(_flatten(record).get(column) for column in self.columns) for record in records]
+        else:
+            items = [item for item in self.query.items if item.kind != "count"]
+            self.rows += [tuple(_value(record, item.path) for item in items) for record in records]
+
+
+def _batch(size: int) -> dict[str, str]:
+    return {"Sforce-Query-Options": f"batchSize={size}"}
+
+
+def _value(record: dict, path: tuple[str, ...]):
+    """The value at Account.Name in a record, matching names the way SOQL does: ignoring case."""
+    node = record
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = next((value for name, value in node.items() if name.lower() == key.lower()), None)
+    return _plain(node)
+
+
+def _plain(value):
+    if isinstance(value, dict) and "records" in value:  # a child subquery
+        return [{k: _plain(v) for k, v in child.items() if k != "attributes"} for child in value["records"]]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items() if k != "attributes"}
+    return value
+
+
+def _flatten(record: dict, prefix: str = "") -> dict:
+    """{"Account": {"Name": "x"}} as {"Account.Name": "x"}; child subqueries stay lists."""
+    flat = {}
+    for key, value in record.items():
+        if key == "attributes":
+            continue
+        if isinstance(value, dict) and "attributes" in value:
+            flat.update(_flatten(value, f"{prefix}{key}."))
+        else:
+            flat[f"{prefix}{key}"] = _plain(value)
+    return flat
+
+
+def _rejected_term(error: ApiError, statement: str, terms: dict[str, str]) -> str | None:
+    """The field whose LIKE Salesforce turned down, from where its error points."""
+    if "INVALID_QUERY_FILTER_OPERATOR" not in error.codes:
+        return None
+    where = ERROR_POSITION.search(str(error))
+    if where is None:
+        return None
+    row, column = int(where.group(1)), int(where.group(2))
+    lines = statement.split("\n")
+    position = sum(len(line) + 1 for line in lines[: row - 1]) + column - 1
+    for path, term in terms.items():
+        start = statement.find(term)
+        if start <= position < start + len(term):
+            return path
+    return None
 
 
 # Salesforce's own words for its field types, as Setup shows them.

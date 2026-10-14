@@ -214,7 +214,7 @@ class InspectorApp(App):
         if rel is None:
             self.notify("Highlight a table in the sidebar first.", timeout=4)
             return
-        self.query_panel.set_sql(f"SELECT * FROM {self.db.quoted_name(rel)}")
+        self.query_panel.set_sql(self.db.browse_sql(rel))
         self._show_tab("query-tab")
         self.query_panel.action_run(focus_results=True)  # the results are what you came for
 

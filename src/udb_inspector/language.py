@@ -1,0 +1,122 @@
+"""What the query editor needs from the language it edits: SQL in some dialect, or SOQL."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from . import hints, soql, sql
+from .hints import Context, Suggestion, TableRef
+
+
+class SqlLanguage:
+    def __init__(self, dialect: str):
+        self.dialect = dialect
+        self.read = sql.sqlglot_dialect(dialect)
+        self.title = hints.PRODUCTS.get(dialect, dialect)
+
+    def statement_range_at(self, text: str, offset: int) -> tuple[int, int]:
+        return sql.statement_range_at(text, offset, self.read)
+
+    def statement_at(self, text: str, offset: int) -> str:
+        return sql.statement_at(text, offset, self.read)
+
+    def syntax_problem(self, statement: str) -> str | None:
+        return sql.syntax_problem(statement, self.dialect)
+
+    def grouping_problems(self, statement: str) -> list[str]:
+        return hints.grouping_problems(statement, self.dialect)
+
+    def context_at(self, text: str, offset: int) -> Context:
+        return hints.context_at(text, offset, self.dialect)
+
+    def suggest(
+        self,
+        context: Context,
+        tables: list[tuple[str, str, str]],
+        columns: Callable[[TableRef], list[tuple[str, str]] | None],
+        quote: Callable[[str], str],
+    ) -> list[Suggestion]:
+        return hints.suggest(context, self.dialect, tables, columns, quote)
+
+    def notes(self, statement: str) -> list[str]:
+        return hints.notes(statement, self.dialect)
+
+    def explain(self, statement: str, cursor: int) -> str | None:
+        return hints.explain(statement, cursor, self.dialect)
+
+    def tables_in(self, statement: str) -> list[TableRef]:
+        return hints.tables_in(statement, self.read)
+
+    def cheat_sheet(self) -> list[tuple[str, str]]:
+        return hints.cheat_sheet(self.dialect)
+
+    def paging_note(self, rows: int, paged: bool | None, statement: str, reordered: bool) -> str:
+        """What udbi does to a query to page it. paged is None before the first run."""
+        if paged is None:
+            return f"Results are read {rows:,} rows at a time: udbi adds LIMIT and OFFSET to your query."
+        if not paged:
+            return "This statement can't be paged, so it ran as typed."
+        note = (
+            f"udbi reads {rows:,} rows at a time by adding LIMIT/OFFSET to your query; your query isn't changed. "
+            f"It asks for {rows + 1:,} to know whether there's a next page."
+        )
+        if sql.has_own_limit(statement, self.read):
+            note += " Its own LIMIT still applies."
+        if reordered:
+            note += " Sort and search run in the database."
+        return note
+
+
+class SoqlLanguage:
+    """SOQL, for Salesforce. Suggestions and explanations come with SOQL hints."""
+
+    dialect = "salesforce"
+    title = "SOQL"
+
+    def statement_range_at(self, text: str, offset: int) -> tuple[int, int]:
+        return soql.statement_range_at(text, offset)
+
+    def statement_at(self, text: str, offset: int) -> str:
+        return soql.statement_at(text, offset)
+
+    def syntax_problem(self, statement: str) -> str | None:
+        return None
+
+    def grouping_problems(self, statement: str) -> list[str]:
+        return []
+
+    def context_at(self, text: str, offset: int) -> Context:
+        return Context("none")
+
+    def suggest(self, context, tables, columns, quote) -> list[Suggestion]:
+        return []
+
+    def notes(self, statement: str) -> list[str]:
+        return []
+
+    def explain(self, statement: str, cursor: int) -> str | None:
+        return None
+
+    def tables_in(self, statement: str) -> list[TableRef]:
+        query = soql.parse(statement)
+        return [TableRef(None, query.object, None)] if query is not None and query.object else []
+
+    def cheat_sheet(self) -> list[tuple[str, str]]:
+        return []
+
+    def paging_note(self, rows: int, paged: bool | None, statement: str, reordered: bool) -> str:
+        if paged is None:
+            return f"Results are read {rows:,} records at a time, through Salesforce's query cursor."
+        if not paged:
+            return "This query has its own LIMIT, groups or counts its records, so it ran as typed."
+        note = (
+            f"udbi reads {rows:,} records at a time through Salesforce's query cursor, which hands them out "
+            "in batches of up to 2,000; your query isn't changed."
+        )
+        if reordered:
+            note += " Sort and search are added to it as ORDER BY and WHERE; search looks in text fields."
+        return note
+
+
+def language_for(dialect: str) -> SqlLanguage | SoqlLanguage:
+    return SoqlLanguage() if dialect == "salesforce" else SqlLanguage(dialect)

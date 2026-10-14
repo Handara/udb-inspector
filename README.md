@@ -317,6 +317,23 @@ their Salesforce types (`Text(80)`, `Lookup(Account)`, `Formula (Number(18, 0))`
 labels and help text, its external Id and unique fields, the lookups it has and
 the child relationships that point at it.
 
+The Query tab takes SOQL. `s` on an object writes a `SELECT` of all its fields
+(SOQL has no `*`). Relationship fields (`Account.Owner.Name`) get a column each,
+a child subquery (`(SELECT Id FROM Contacts)`) a column holding its records, and
+an aggregate its alias or `expr0`, `expr1`, … as Salesforce names them.
+`FIELDS(ALL)` and `TYPEOF` work too, and `ALL ROWS` includes deleted records.
+
+Salesforce runs a query once and hands out its records through a cursor, up to
+2,000 at a time, along with how many there are. udbi reads pages from that
+cursor, so the count is free and the next page is usually already there. Sorting
+adds `ORDER BY` and searching adds `WHERE … LIKE` on the query's text fields;
+where Salesforce refuses `LIKE` (some setup picklists), that field is matched
+exactly instead. A query with its own `LIMIT`, or one that groups or counts, runs
+as typed and is sorted and searched in udbi. Running a query again always asks
+Salesforce again. `FOR VIEW`, `FOR REFERENCE`, `FOR UPDATE` and `UPDATE
+TRACKING`/`VIEWSTAT` are refused: they write view statistics or lock records.
+Export streams every record, batch by batch.
+
 ## How the database type is detected
 
 | Target | Detection |

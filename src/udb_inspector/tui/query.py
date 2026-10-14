@@ -21,20 +21,9 @@ from textual.widgets.option_list import Option
 from .. import export
 from ..connections import tilde
 from ..database import MAX_ROWS, Page, QueryError, QueryResult, Relation
-from ..hints import (
-    PRODUCTS,
-    Context,
-    Suggestion,
-    TableRef,
-    cheat_sheet,
-    context_at,
-    explain,
-    grouping_problems,
-    notes,
-    suggest,
-    tables_in,
-)
-from ..sql import ReadOnlyError, has_own_limit, sqlglot_dialect, statement_at, statement_range_at, syntax_problem
+from ..hints import Context, Suggestion, TableRef
+from ..language import SoqlLanguage, SqlLanguage, language_for
+from ..sql import ReadOnlyError, statement_range_at
 from .record import RecordScreen
 from .screens import ConfirmScreen, form_row, key_hints
 from .values import CellScreen, cell, plain, sort_key
@@ -177,6 +166,7 @@ class QueryPanel(Vertical):
         self._syntax_timer = None
         self._search_timer = None
         self.paged = False  # the result is one page of a query run page by page
+        self._language: SqlLanguage | SoqlLanguage | None = None
         self.sql = ""  # the statement being shown
         self.columns: list[str] = []
         self.search = ""  # paged: the search the database applied
@@ -275,16 +265,23 @@ class QueryPanel(Vertical):
             return
         editor = self.editor
         offset = editor.document.get_index_from_location(editor.cursor_location)
-        context = context_at(editor.text, offset, info.dialect)
+        language = self.language
+        context = language.context_at(editor.text, offset)
         editor.context = context
-        editor.suggestions = suggest(
-            context, info.dialect, self._tables(), self._columns_for, db.engine.dialect.identifier_preparer.quote
-        )[:50]
-        start, end = statement_range_at(editor.text, offset, sqlglot_dialect(info.dialect))
+        editor.suggestions = language.suggest(context, self._tables(), self._columns_for, db.quote_identifier)[:50]
+        start, end = language.statement_range_at(editor.text, offset)
         statement = editor.text[start:end]
-        self._notes = notes(statement, info.dialect)
-        self._explanation = explain(statement, offset - start, info.dialect)
+        self._notes = language.notes(statement)
+        self._explanation = language.explain(statement, offset - start)
         self._render_hints()
+
+    @property
+    def language(self) -> SqlLanguage | SoqlLanguage:
+        """The connected database's query language: its SQL dialect, or SOQL."""
+        dialect = self.app.info.dialect
+        if self._language is None or self._language.dialect != dialect:
+            self._language = language_for(dialect)
+        return self._language
 
     def _tables(self) -> list[tuple[str, str, str]]:
         default = self.app.info.default_schema
@@ -331,9 +328,9 @@ class QueryPanel(Vertical):
             return
         editor = self.editor
         offset = editor.document.get_index_from_location(editor.cursor_location)
-        statement = statement_at(editor.text, offset, sqlglot_dialect(self.app.info.dialect))
-        self._syntax = syntax_problem(statement, self.app.info.dialect)
-        self._grouping = grouping_problems(statement, self.app.info.dialect)
+        statement = self.language.statement_at(editor.text, offset)
+        self._syntax = self.language.syntax_problem(statement)
+        self._grouping = self.language.grouping_problems(statement)
         self._render_hints()
 
     def _render_hints(self) -> None:
@@ -374,7 +371,7 @@ class QueryPanel(Vertical):
 
     def action_cheat_sheet(self) -> None:
         if self.app.info is not None:
-            self.app.push_screen(CheatSheetScreen(self.app.info.dialect))
+            self.app.push_screen(CheatSheetScreen(self.language))
 
     def reset(self) -> None:
         """Forget the results and cached columns of the previous connection."""
@@ -404,7 +401,7 @@ class QueryPanel(Vertical):
         sql = editor.selected_text.strip()
         if not sql:
             offset = editor.document.get_index_from_location(editor.cursor_location)
-            sql = statement_at(editor.text, offset, sqlglot_dialect(self.app.info.dialect))
+            sql = self.language.statement_at(editor.text, offset)
         if not sql:
             self._set_status(Text("Nothing to run: write a query first.", style="dim"))
             return
@@ -414,6 +411,7 @@ class QueryPanel(Vertical):
         self.grid.loading = True
         self._focus_results = focus_results  # a loading widget can't take focus yet
         self._request += 1
+        db.forget(sql)
         self._load(sql, True, self._page_args(), self._request)
 
     def _page_args(self) -> dict:
@@ -522,7 +520,7 @@ class QueryPanel(Vertical):
         if index is None:
             return
         row = dict(zip(self.result.columns, self.result.rows[index]))
-        refs = tables_in(self.result.sql, sqlglot_dialect(self.app.info.dialect))
+        refs = self.language.tables_in(self.result.sql)
         if len(refs) != 1:
             reads = "reads several tables" if refs else "doesn't read a table"
             self._set_status(Text(f"Records open from a query on one table; this one {reads}.", style="yellow"))
@@ -540,7 +538,7 @@ class QueryPanel(Vertical):
 
     def action_export(self) -> None:
         result = self.result
-        refs = tables_in(result.sql, sqlglot_dialect(self.app.info.dialect))
+        refs = self.language.tables_in(result.sql)
         if self.paged:
             choose_rows, shown = bool(self.search or self.sort), self.total
         else:
@@ -700,21 +698,12 @@ class QueryPanel(Vertical):
         self.query_one("#paging-sql", Static).update(Text.assemble(("Sent: ", "bold"), sent) if sent else "")
 
     def _paging_note(self) -> Text:
-        if self.result is None:
-            return Text(f"Results are read {self.row_limit:,} rows at a time: udbi adds LIMIT and OFFSET to your query.", style="dim")
-        if not self.paged:
-            return Text(
-                f"This statement can't be paged, so it ran as typed. udbi shows its first {MAX_ROWS:,} rows, {self.row_limit:,} at a time.",
-                style="dim",
-            )
-        note = (
-            f"udbi reads {self.row_limit:,} rows at a time by adding LIMIT/OFFSET to your query; your query isn't changed. "
-            f"It asks for {self.row_limit + 1:,} to know whether there's a next page."
-        )
-        if has_own_limit(self.sql, sqlglot_dialect(self.app.info.dialect)):
-            note += " Its own LIMIT still applies."
-        if self.sort or self.search:
-            note += " Sort and search run in the database."
+        if self.app.info is None:
+            return Text("")
+        paged = None if self.result is None else self.paged
+        note = self.language.paging_note(self.row_limit, paged, self.sql, bool(self.sort or self.search))
+        if paged is False:
+            note += f" udbi shows its first {MAX_ROWS:,} rows, {self.row_limit:,} at a time."
         return Text(note, style="dim")
 
     @on(DataTable.HeaderSelected)
@@ -926,9 +915,9 @@ class ExportScreen(ModalScreen[ExportRequest | None]):
 class CheatSheetScreen(ModalScreen[None]):
     BINDINGS = [Binding("escape,f1", "close", "Close")]
 
-    def __init__(self, dialect: str):
+    def __init__(self, language: SqlLanguage | SoqlLanguage):
         super().__init__()
-        self.dialect = dialect
+        self.language = language
 
     def compose(self) -> ComposeResult:
         from rich.table import Table
@@ -936,10 +925,10 @@ class CheatSheetScreen(ModalScreen[None]):
         table = Table(box=None, show_header=False, padding=(0, 2, 0, 0))
         table.add_column(style="dim")
         table.add_column(style="bold")
-        for topic, snippet in cheat_sheet(self.dialect):
+        for topic, snippet in self.language.cheat_sheet():
             table.add_row(topic, snippet)
         with Vertical(classes="dialog"):
-            yield Label(f"{PRODUCTS.get(self.dialect, self.dialect)} cheat sheet", classes="title", markup=False)
+            yield Label(f"{self.language.title} cheat sheet", classes="title", markup=False)
             yield Static(table)
             yield Label(key_hints(("esc", "close")), classes="hint")
 

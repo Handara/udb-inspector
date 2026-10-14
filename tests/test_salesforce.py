@@ -2,7 +2,10 @@
 
 import asyncio
 import io
+import re
 import tomllib
+from decimal import Decimal
+from urllib.parse import unquote
 
 import pytest
 from rich.console import Console
@@ -10,9 +13,10 @@ from textual.widgets import OptionList
 
 from udb_inspector import salesforce
 from udb_inspector.connections import global_dir, resolve
-from udb_inspector.database import ConnectError, Relation
+from udb_inspector.database import ConnectError, QueryError, Relation
 from udb_inspector.detect import detect
 from udb_inspector.salesforce import Api, ApiError, SalesforceOrg, SfError, SfOrg, field_type, list_orgs
+from udb_inspector.sql import ReadOnlyError
 from udb_inspector.tui import app as app_module
 from udb_inspector.tui import screens
 from udb_inspector.tui.app import InspectorApp
@@ -304,5 +308,188 @@ def test_the_chooser_lists_orgs_from_sf(monkeypatch):
         await pilot.press("enter")
         await settle(pilot)
         assert opened[-1].display_url == "sf:uat" and not opened[-1].allow_writes
+
+    run(app, scenario)
+
+
+# Querying, against a tiny Salesforce that pages, sorts and searches like the real one
+
+
+CONTACT = {
+    "name": "Contact",
+    "label": "Contact",
+    "keyPrefix": "003",
+    "fields": [
+        {"name": "Id", "type": "id", "filterable": True},
+        {"name": "LastName", "type": "string", "length": 80, "filterable": True},
+        {"name": "Kind", "type": "picklist", "filterable": True},  # refuses LIKE, like FieldPermissions.Field
+        {"name": "Score", "type": "double", "precision": 18, "scale": 2, "filterable": True},
+        {"name": "AccountId", "type": "reference", "referenceTo": ["Account"], "relationshipName": "Account", "filterable": True},
+        {"name": "MailingAddress", "type": "address"},
+    ],
+    "childRelationships": [],
+}
+ACCOUNT_NAME = {"name": "Account", "fields": [{"name": "Id", "type": "id"}, {"name": "Name", "type": "string", "filterable": True}],
+                "childRelationships": []}
+CONTACTS = [
+    {"attributes": {"type": "Contact"}, "Id": f"003{i:015}", "LastName": f"Name {i:03}", "Kind": "Gold" if i % 3 == 0 else "Silver",
+     "Score": Decimal(i) / 4, "Account": {"attributes": {"type": "Account"}, "Name": f"Acme {i % 7}"} if i % 5 else None}
+    for i in range(450)
+]
+
+
+class QueryApi(FakeApi):
+    def __init__(self, org):
+        super().__init__(org)
+        self.sent = []  # the SOQL of each new query
+        self.cursors = {}
+
+    def data_path(self, path):
+        return f"/services/data/v62.0/{path}"
+
+    def get(self, path):
+        if path == "sobjects/Contact/describe":
+            return CONTACT
+        if path == "sobjects/Account/describe":
+            return ACCOUNT_NAME
+        return super().get(path)
+
+    def request(self, method, path, body=None, *, headers=None):
+        size = int((headers or {}).get("Sforce-Query-Options", "batchSize=2000").split("=")[1])
+        if "?q=" in path:
+            text = unquote(path.split("?q=", 1)[1])
+            self.sent.append(text)
+            records = self._run(text)
+            if text.startswith("SELECT COUNT()"):
+                return {"totalSize": len(records), "done": True, "records": []}
+            key = f"/services/data/v62.0/query/L{len(self.sent)}"
+            self.cursors[key] = records
+            return self._batch(key, 0, size, len(records))
+        key, start = path.rsplit("-", 1)
+        return self._batch(key, int(start), size, len(self.cursors[key]))
+
+    def _batch(self, key, start, size, total):
+        records = self.cursors.get(key, [])[start : start + size]
+        more = start + size < total
+        return {"totalSize": total, "done": not more, "records": records, **({"nextRecordsUrl": f"{key}-{start + size}"} if more else {})}
+
+    def _run(self, text):
+        records = list(CONTACTS)
+        where = re.search(r" WHERE (.+?)(?: ORDER BY |$)", text)
+        if where:
+            terms = where.group(1).split(" OR ")
+            for term in terms:
+                if term.startswith("Kind LIKE"):
+                    column = text.index(term) + 1
+                    raise ApiError(400, [{"errorCode": "INVALID_QUERY_FILTER_OPERATOR",
+                                          "message": f"{text}\nERROR at Row:1:Column:{column}\ninvalid operator on id field"}])
+            records = [record for record in records if any(_matches(record, term) for term in terms)]
+        order = re.search(r" ORDER BY (\S+) (ASC|DESC)", text)
+        if order:
+            path, descending = order.group(1), order.group(2) == "DESC"
+            records.sort(key=lambda record: str(_at(record, path)), reverse=descending)
+        return records
+
+
+def _at(record, path):
+    for key in path.split("."):
+        record = (record or {}).get(key)
+    return record
+
+
+def _matches(record, term):
+    path, operator, value = re.match(r"(\S+) (LIKE|=) '(.*)'", term).groups()
+    found = str(_at(record, path) or "")
+    return value.strip("%").lower() in found.lower() if operator == "LIKE" else found == value
+
+
+def query_org():
+    org = SalesforceOrg(detect("sf:uat"))
+    org.api = QueryApi("uat")
+    return org
+
+
+CONTACT_QUERY = "SELECT Id, LastName, Kind, Score, Account.Name FROM Contact"
+
+
+def test_pages_come_from_the_query_cursor():
+    org = query_org()
+    page = org.fetch_page(CONTACT_QUERY, offset=0, limit=50)
+    assert page.columns == ["Id", "LastName", "Kind", "Score", "Account.Name"]
+    assert page.rows[1] == ("003000000000000001", "Name 001", "Silver", Decimal("0.25"), "Acme 1")
+    assert page.rows[0][4] is None and page.has_more  # no Account
+    assert org.count_matching(CONTACT_QUERY) == 450 and len(org.api.sent) == 1  # the count came with the first batch
+    assert org.fetch_page(CONTACT_QUERY, offset=50, limit=50).rows[0][1] == "Name 050"  # from the batch of 200 already fetched
+    last = org.fetch_page(CONTACT_QUERY, offset=400, limit=50)
+    assert [row[1] for row in last.rows][-1] == "Name 449" and not last.has_more
+    assert len(org.api.sent) == 1  # one query, read further through its cursor
+
+
+def test_running_again_asks_again():
+    org = query_org()
+    org.fetch_page(CONTACT_QUERY, offset=0, limit=50)
+    org.fetch_page(CONTACT_QUERY, offset=0, limit=50)
+    assert len(org.api.sent) == 1
+    org.forget(CONTACT_QUERY)
+    org.fetch_page(CONTACT_QUERY, offset=0, limit=50)
+    assert len(org.api.sent) == 2
+
+
+def test_sort_and_search_go_to_salesforce():
+    org = query_org()
+    page = org.fetch_page(CONTACT_QUERY, offset=0, limit=5, sort=("lastname", True))
+    assert page.sql == f"{CONTACT_QUERY} ORDER BY LastName DESC NULLS LAST" and page.rows[0][1] == "Name 449"
+
+    page = org.fetch_page(CONTACT_QUERY, offset=0, limit=500, search="gold")
+    # Kind refused LIKE, so it's matched exactly; Id, Score and the address aren't text
+    assert page.sql == f"{CONTACT_QUERY} WHERE LastName LIKE '%gold%' OR Kind = 'gold' OR Account.Name LIKE '%gold%'"
+    assert page.rows == []  # = is exact
+    page = org.fetch_page(CONTACT_QUERY, offset=0, limit=500, search="Gold")
+    assert len(page.rows) == 150 and org.count_matching(CONTACT_QUERY, search="Gold") == 150
+    page = org.fetch_page(CONTACT_QUERY, offset=0, limit=500, search="acme 3")
+    assert len(page.rows) == len([i for i in range(450) if i % 5 and i % 7 == 3])
+
+    with pytest.raises(QueryError, match="sorts by fields"):
+        org.fetch_page("SELECT Id, (SELECT Id FROM Cases) FROM Contact", offset=0, limit=5, sort=("Cases", False))
+
+
+def test_queries_it_cant_page_run_whole():
+    org = query_org()
+    assert org.fetch_page(f"{CONTACT_QUERY} LIMIT 10", offset=0, limit=50) is None
+    assert org.run_query("SELECT COUNT() FROM Contact").rows == [(450,)]
+    result = org.run_query(CONTACT_QUERY, max_rows=300)
+    assert len(result.rows) == 300 and result.truncated
+    with pytest.raises(ReadOnlyError):
+        org.run_query("SELECT Id FROM Contact FOR VIEW")
+
+
+def test_export_streams_every_record():
+    org = query_org()
+    with org.stream_query(CONTACT_QUERY) as (columns, batches):
+        sizes = [len(batch) for batch in batches]
+    assert columns[0] == "Id" and sum(sizes) == 450
+
+
+def test_browse_lists_every_field():
+    org = query_org()
+    assert org.browse_sql(Relation("uat", "Contact", "object")) == "SELECT Id, LastName, Kind, Score, AccountId FROM Contact"
+
+
+def test_query_an_org_in_the_app(monkeypatch):
+    monkeypatch.setattr(app_module, "open_database", lambda target: query_org())
+    app = InspectorApp(detect("sf:uat"))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        app.query_panel.set_sql(CONTACT_QUERY)
+        app.action_query()
+        await pilot.press("ctrl+r")
+        await settle(pilot)
+        panel = app.query_panel
+        assert panel.paged and len(panel.result.rows) == 50 and panel.total == 450
+        assert "query cursor" in str(panel.query_one("#paging-note").content)
+        await pilot.press("ctrl+down", "right_square_bracket")
+        await settle(pilot)
+        assert panel.result.rows[0][1] == "Name 050"
 
     run(app, scenario)

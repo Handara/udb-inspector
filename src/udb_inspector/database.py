@@ -355,6 +355,16 @@ class Database:
             return f"{preparer.quote_schema(rel.schema)}.{name}"
         return name
 
+    def forget(self, sql: str) -> None:
+        """Nothing to forget: every page is a query of its own. (Salesforce keeps cursors.)"""
+
+    def quote_identifier(self, name: str) -> str:
+        return self.engine.dialect.identifier_preparer.quote(name)
+
+    def browse_sql(self, rel: Relation) -> str:
+        """The query that shows a table's rows."""
+        return f"SELECT * FROM {self.quoted_name(rel)}"
+
     def run_query(self, sql: str, max_rows: int = MAX_ROWS) -> QueryResult:
         """Run a read-only query, fetching at most `max_rows` rows."""
         dialect = dialect_name(self.engine.dialect)
