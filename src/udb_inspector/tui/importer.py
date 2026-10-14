@@ -67,7 +67,7 @@ class ImportPanel(Vertical):
         self._refresh()
 
     def set_relations(self, relations: list[Relation], default_schema: str | None) -> None:
-        tables = [rel for rel in relations if rel.kind == "table"]
+        tables = [rel for rel in relations if rel.kind != "view"]
         if tables == self.relations:
             return
         self.relations = tables

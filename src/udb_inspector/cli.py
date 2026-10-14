@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.text import Text
 
 from .connections import NothingToOpen, resolve
-from .database import ConnectError, Database
+from .database import ConnectError, open_database
 from .detect import DetectionError
 from .render import connection_table
 
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def info(name: str | None, global_only: bool) -> int:
     try:
-        db = Database(resolve(name, global_only=global_only))
+        db = open_database(resolve(name, global_only=global_only))
         server = db.server_info()
     except (DetectionError, ConnectError) as exc:
         Console(stderr=True, soft_wrap=True).print(Text.assemble(("error: ", "bold red"), str(exc)))  # one line, for logs and grep

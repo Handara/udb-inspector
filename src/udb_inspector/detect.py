@@ -21,6 +21,8 @@ class Target:
 
     @property
     def display_url(self) -> str:
+        if self.url.drivername == SALESFORCE:
+            return f"sf:{self.url.database}"
         return self.url.render_as_string(hide_password=True)
 
     def with_password(self, password: str) -> Target:
@@ -39,19 +41,30 @@ DEFAULT_DRIVERS = {
     "oracle": "oracle+oracledb",
 }
 
+# Salesforce orgs are named the way the Salesforce CLI knows them: sf:ALIAS or sf:USERNAME.
+SALESFORCE = "salesforce"
+SALESFORCE_PREFIXES = ("sf:", "salesforce://")
+
 SQLITE_MAGIC = b"SQLite format 3\x00"
 SQLITE_SUFFIXES = {".db", ".db3", ".sqlite", ".sqlite3"}
 DUCKDB_MAGIC = b"DUCK"  # at byte offset 8
 
 
 def detect(target: str) -> Target:
-    """A URL or a SQLite/DuckDB file."""
+    """A URL, a Salesforce org or a SQLite/DuckDB file."""
+    if target.startswith(SALESFORCE_PREFIXES):
+        return Target(parse_url(target), "sf CLI")
     if "://" in target:
         return Target(parse_url(target), "URL")
     return from_file(Path(target).expanduser())
 
 
 def parse_url(raw: str) -> URL:
+    if raw.startswith(SALESFORCE_PREFIXES):
+        org = raw.split(":", 1)[1].lstrip("/")
+        if not org:
+            raise DetectionError("Name the Salesforce org: sf:ALIAS or sf:USERNAME (see: sf org list)")
+        return URL.create(SALESFORCE, database=org)
     try:
         url = make_url(raw)
     except ArgumentError:

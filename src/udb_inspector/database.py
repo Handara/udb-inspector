@@ -17,7 +17,7 @@ from sqlalchemy.engine import Connection, Dialect
 from sqlalchemy.exc import DBAPIError, NoSuchModuleError, SAWarning
 from sqlalchemy.types import TypeEngine
 
-from .detect import Target
+from .detect import SALESFORCE, Target
 from .sql import check_read_only, count_query, paged_query, single_query, sqlglot_dialect
 
 # Reflection warns about things it can't represent (expression indexes,
@@ -199,6 +199,15 @@ SYSTEM_SCHEMAS = {
 
 # Oracle reports every user as a schema; only the connected one is useful.
 DEFAULT_SCHEMA_ONLY = {"oracle"}
+
+
+def open_database(target: Target):
+    """The backend for a target: a Salesforce org, or a database SQLAlchemy reaches."""
+    if target.url.drivername == SALESFORCE:
+        from .salesforce import SalesforceOrg
+
+        return SalesforceOrg(target)
+    return Database(target)
 
 
 class Database:

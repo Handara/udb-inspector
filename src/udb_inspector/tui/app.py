@@ -14,8 +14,8 @@ from textual.widgets.tree import TreeNode
 from textual.worker import get_current_worker
 
 from ..connection_setup import Saved
-from ..database import ConnectError, Database, ForeignKey, Relation, ServerInfo, TableDetails, is_auth_error
-from ..detect import DetectionError, Target
+from ..database import ConnectError, Database, ForeignKey, Relation, ServerInfo, TableDetails, is_auth_error, open_database
+from ..detect import SALESFORCE, DetectionError, Target
 from ..render import connection_table, table_details
 from ..settings import load_settings
 from .importer import ImportPanel
@@ -148,7 +148,7 @@ class InspectorApp(App):
         self._show_tab("import-tab")
         self._sync_import_tables()
         node = self.tree.cursor_node
-        if node is not None and isinstance(node.data, Relation) and node.data.kind == "table":
+        if node is not None and isinstance(node.data, Relation) and node.data.kind != "view":
             self.import_panel.choose(node.data)
         self.import_panel.query_one("#import-preview").focus()
 
@@ -252,7 +252,7 @@ class InspectorApp(App):
     @work(thread=True, exclusive=True, group="connect")
     def _connect(self, target: Target, retrying: Target | None) -> None:
         try:
-            db = Database(target)
+            db = open_database(target)
         except ConnectError as exc:
             self.call_from_thread(self._connect_failed, target, exc, retrying)
             return
@@ -266,7 +266,8 @@ class InspectorApp(App):
 
     def _connect_failed(self, target: Target, exc: ConnectError, retrying: Target | None) -> None:
         self.query_one("#main").loading = False
-        if is_auth_error(exc) and (retrying is not None or target.url.password is None):
+        # sf does Salesforce logins; there's no password to ask for.
+        if target.url.drivername != SALESFORCE and is_auth_error(exc) and (retrying is not None or target.url.password is None):
             base = retrying or target
             error = "Wrong password, try again." if retrying else None
 
@@ -472,7 +473,7 @@ class InspectorApp(App):
         if worker.is_cancelled:
             return
         self.call_from_thread(self._show_details, details, None)
-        if rel.kind != "table":
+        if rel.kind == "view":
             return
         # Incoming foreign keys can take a while on big schemas, so they
         # arrive after the rest of the details.
@@ -505,6 +506,8 @@ class InspectorApp(App):
         if not self.schemas:
             return Text("Reading schema…" if self.tree.loading else "No schemas visible to this user.", style="dim")
         first = self.relations.get(self.schemas[0], [])
+        if self.info and self.info.dialect == SALESFORCE:
+            return Text(f"{_plural(len(first), 'queryable object')}. Select one to inspect it.", style="dim")
         tables = sum(1 for rel in first if rel.kind == "table")
         text = f"{self.schemas[0]}: {_plural(tables, 'table')}, {_plural(len(first) - tables, 'view')}"
         if len(self.schemas) > 1:

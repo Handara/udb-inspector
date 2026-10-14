@@ -41,7 +41,8 @@ def table_details(details: TableDetails, referenced_by: list[ForeignKey] | None)
     if details.comment:
         parts.append(Text(details.comment, style="italic"))
 
-    parts += _section("Columns", _columns_table(details))
+    words = _words(rel)
+    parts += _section(words["columns"].title(), _columns_table(details))
 
     if details.keys:
         keys = _grid("Kind", "Columns", "Name")
@@ -50,17 +51,17 @@ def table_details(details: TableDetails, referenced_by: list[ForeignKey] | None)
         parts += _section("Keys and indexes", keys)
 
     if details.foreign_keys:
-        refs = _grid("Columns", "Points to", "Name")
+        refs = _grid("Columns", "Points to", "Name")  # for Salesforce, Name is the relationship name
         for fk in details.foreign_keys:
             target = qualified(fk.ref_schema, fk.ref_table, rel.schema)
             refs.add_row(", ".join(fk.columns), Text(f"→ {target} ({', '.join(fk.ref_columns)})", style="cyan"), Text(fk.name or "", style="dim"))
         parts += _section("References", refs)
 
-    if rel.kind == "table":
+    if rel.kind != "view":
         if referenced_by is None:
             parts += _section("Referenced by", Text("loading…", style="dim italic"))
         elif not referenced_by:
-            parts += _section("Referenced by", Text("No foreign keys point at this table.", style="dim"))
+            parts += _section("Referenced by", Text(f"No {words['foreign keys']} point at this {words['table']}.", style="dim"))
         else:
             incoming = _grid("Table", "Columns", "Name")
             for fk in referenced_by:
@@ -77,12 +78,20 @@ def table_details(details: TableDetails, referenced_by: list[ForeignKey] | None)
 
 def _summary(details: TableDetails, referenced_by: list[ForeignKey] | None) -> Text:
     rel = details.relation
-    facts = [f"{rel.kind} in {rel.schema}", _count(len(details.columns), "column")]
+    words = _words(rel)
+    facts = [f"{rel.kind} in {rel.schema}", _count(len(details.columns), words["column"])]
     if details.foreign_keys:
-        facts.append(_count(len(details.foreign_keys), "foreign key"))
+        facts.append(_count(len(details.foreign_keys), words["foreign key"]))
     if referenced_by:
-        facts.append(f"referenced by {_count(len({(fk.schema, fk.table) for fk in referenced_by}), 'table')}")
+        facts.append(f"referenced by {_count(len({(fk.schema, fk.table) for fk in referenced_by}), words['table'])}")
     return Text("  |  ".join(facts), style="dim")
+
+
+def _words(rel) -> dict[str, str]:
+    """Salesforce objects have fields and lookups; tables have columns and foreign keys."""
+    if rel.kind == "object":
+        return {"column": "field", "columns": "fields", "foreign key": "lookup", "foreign keys": "lookups", "table": "object"}
+    return {"column": "column", "columns": "columns", "foreign key": "foreign key", "foreign keys": "foreign keys", "table": "table"}
 
 
 def _count(number: int, word: str) -> str:
@@ -115,7 +124,8 @@ def _grid(*headers: str) -> Table:
     table = Table(box=None, show_edge=False, pad_edge=False, padding=(0, 4, 0, 0), header_style="dim")
     for index, header in enumerate(headers):
         last = index == len(headers) - 1
-        table.add_column(header, no_wrap=last, overflow="ellipsis" if last else "fold")
+        # The last column doesn't wrap; capped, so long comments can't squeeze the others to nothing.
+        table.add_column(header, no_wrap=last, overflow="ellipsis" if last else "fold", max_width=60 if last else None)
     return table
 
 

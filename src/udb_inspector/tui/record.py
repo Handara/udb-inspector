@@ -72,7 +72,7 @@ class RecordScreen(ModalScreen[None]):
                 note = note or "These results don't include the primary key, so this is the row as your query returned it."
             # Only the tables we can follow: without the key's value there's nothing to look up.
             incoming = [
-                fk for fk in (db.referenced_by(self.rel) if self.rel.kind == "table" else [])
+                fk for fk in (db.referenced_by(self.rel) if self.rel.kind != "view" else [])
                 if _incoming_where(fk, values) is not None
             ]
         except Exception as exc:

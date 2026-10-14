@@ -1,7 +1,8 @@
 # udb-inspector
 
 A unified database inspector for the terminal: point it at PostgreSQL, MySQL,
-MariaDB, SQLite, SQL Server, Oracle or DuckDB, and it works out what it is. Browse
+MariaDB, SQLite, SQL Server, Oracle, DuckDB or a Salesforce org, and it works out
+what it is. Browse
 the schema from a sidebar, write queries with suggestions and explanations for
 that database, follow records through their foreign keys, and export to CSV or
 Excel.
@@ -294,6 +295,27 @@ header says "writes allowed" when they are.
 `${VAR}` is looked up in the environment first, then the env file. When no
 password is configured, Postgres tries `~/.pgpass`, and otherwise the app asks
 for it.
+
+### Salesforce
+
+udbi opens the orgs the [Salesforce CLI](https://developer.salesforce.com/tools/salesforcecli)
+(`sf`) is logged in to, and leaves logging in to it: `sf org login web --alias
+uat` once, with whatever MFA or SSO the org asks for, and udbi asks `sf` for a
+fresh access token each time it opens the org. It never stores one.
+
+```sh
+udbi sf:uat                       # an alias, or a username: sf:me@acme.com.uat
+```
+
+The connections list (`c`) shows every org `sf` knows, marked production,
+sandbox, scratch or developer org, without contacting them. Pressing `w` on one
+saves it as a global connection with writes allowed (`url = "sf:uat"`), after
+a warning that says so loudly for production orgs.
+
+The sidebar lists the org's queryable objects. An object shows its fields with
+their Salesforce types (`Text(80)`, `Lookup(Account)`, `Formula (Number(18, 0))`),
+labels and help text, its external Id and unique fields, the lookups it has and
+the child relationships that point at it.
 
 ## How the database type is detected
 

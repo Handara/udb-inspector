@@ -29,7 +29,9 @@ def sample_db(tmp_path):
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
-    """Never read the real global config, a .udbi.toml above the repo, or $UDBI_URL."""
+    """Never read the real global config, a .udbi.toml above the repo, $UDBI_URL or the
+    real Salesforce CLI's logins (tests that want orgs give their own)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr("udb_inspector.tui.screens.sf_installed", lambda: False)
     monkeypatch.delenv("UDBI_URL", raising=False)
     monkeypatch.chdir(tmp_path)

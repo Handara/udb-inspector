@@ -28,7 +28,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 from sqlalchemy.engine import URL
 
-from .detect import DEFAULT_DRIVERS, DetectionError, Target, detect, parse_url
+from .detect import DEFAULT_DRIVERS, SALESFORCE_PREFIXES, DetectionError, Target, detect, parse_url
 
 PROJECT_FILE = ".udbi.toml"
 GLOBAL_FILE = "config.toml"
@@ -191,7 +191,7 @@ def resolve(target: str | None, *, global_only: bool = False, cwd: Path | None =
     connection, then the global default. -g skips $UDBI_URL and the project.
     """
     cwd = cwd or Path.cwd()
-    if target and ("://" in target or Path(target).expanduser().exists()):
+    if target and ("://" in target or target.startswith(SALESFORCE_PREFIXES) or Path(target).expanduser().exists()):
         return detect(target)
 
     configs = []

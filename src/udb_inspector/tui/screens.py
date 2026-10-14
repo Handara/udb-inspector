@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from textual.widgets.option_list import Option
 
 from ..connection_setup import (
     DEFAULT_PORTS,
+    NAME_PATTERN,
     Guess,
     Saved,
     config_path,
@@ -29,8 +31,9 @@ from ..connection_setup import (
     validate,
 )
 from ..connections import FILE_TYPES, Config, ConfigError, connection_target, find_project_config, read_env_file, tilde
-from ..database import ConnectError, Database
+from ..database import ConnectError, open_database
 from ..detect import DetectionError, Target
+from ..salesforce import SfError, SfOrg, list_orgs, sf_installed
 from ..settings import save_setting
 
 TYPE_OPTIONS = [
@@ -114,6 +117,9 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
         super().__init__()
         self.cwd = cwd
         self.saved: list[Saved] = []
+        # Orgs the Salesforce CLI is logged in to: None while sf answers, [] without sf.
+        self.sf_orgs: list[SfOrg] | None = None if sf_installed() else []
+        self.sf_error: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
@@ -127,6 +133,23 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
 
     def on_mount(self) -> None:
         self.refresh_list()
+        if self.sf_orgs is None:
+            self._load_orgs()
+
+    @work(thread=True, exclusive=True)
+    def _load_orgs(self) -> None:
+        try:
+            orgs, error = list_orgs(), None
+        except SfError as exc:
+            orgs, error = [], str(exc)
+        self.app.call_from_thread(self._orgs_loaded, orgs, error)
+
+    def _orgs_loaded(self, orgs: list[SfOrg], error: str | None) -> None:
+        self.sf_orgs, self.sf_error = orgs, error
+        option_list = self.query_one(OptionList)
+        highlighted = option_list.highlighted
+        keep = option_list.get_option_at_index(highlighted).id if highlighted is not None else None
+        self.refresh_list(keep=keep)
 
     def refresh_list(self, keep: str | None = None) -> None:
         self.saved, errors = saved_connections(self.cwd)
@@ -144,6 +167,7 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
             options.append(Option(label, id=f"saved-{index}"))
         if not self.saved:
             options.append(Option(Text("No saved connections yet.", style="dim italic"), disabled=True))
+        options += self._salesforce_options()
         options.append(Option(Text("+ Add a connection", style="italic"), id="add"))
 
         option_list = self.query_one(OptionList)
@@ -153,11 +177,31 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
         first = next(i for i, option in enumerate(options) if not option.disabled)
         option_list.highlighted = ids.index(keep) if keep is not None and keep in ids else first
         option_list.focus()
-        self.query_one("#errors", Static).update("\n".join(errors))
+        self.query_one("#errors", Static).update("\n".join(errors + ([self.sf_error] if self.sf_error else [])))
+
+    def _salesforce_options(self) -> list[Option]:
+        if self.sf_orgs == [] and not self.sf_error:
+            return []  # no sf, or no logins: nothing to say
+        options = [Option(Text.assemble(("Salesforce", "bold"), "  orgs logged in with the sf CLI", style="dim"), disabled=True)]
+        if self.sf_orgs is None:
+            return options + [Option(Text("  asking sf…", style="dim italic"), disabled=True)]
+        width = max((len(org.name) for org in self.sf_orgs), default=0)
+        for index, org in enumerate(self.sf_orgs):
+            label = Text.assemble(("  " + org.name.ljust(width), "bold"), "   ")
+            label.append(org.kind, style="bold red" if org.kind == "production" else "green")
+            details = [org.username] if org.alias else []
+            details.append(org.instance_url.removeprefix("https://"))
+            label.append("   " + "  ".join(details), style="dim")
+            if org.default:
+                label.append("   default", style="cyan")
+            options.append(Option(label, id=f"sf-{index}"))
+        return options
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id == "add":
             self.action_add()
+        elif event.option.id and event.option.id.startswith("sf-"):
+            self.dismiss(self.sf_orgs[int(event.option.id.removeprefix("sf-"))])
         elif event.option.id:
             self.dismiss(self.saved[int(event.option.id.removeprefix("saved-"))])
 
@@ -178,6 +222,12 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
         return option_id, self.saved[int(option_id.removeprefix("saved-"))]
 
     def action_toggle_writes(self) -> None:
+        option_list = self.query_one(OptionList)
+        if option_list.highlighted is not None:
+            option_id = option_list.get_option_at_index(option_list.highlighted).id or ""
+            if option_id.startswith("sf-"):
+                self._save_org_with_writes(self.sf_orgs[int(option_id.removeprefix("sf-"))])
+                return
         highlighted = self._highlighted()
         if highlighted is None:
             return
@@ -193,6 +243,29 @@ class ConnectionsScreen(ModalScreen[Saved | None]):
                 self.refresh_list(keep=option_id)
 
         question = f"Allow writes to {saved.name}? The Import tab will be able to insert, update and delete its rows."
+        self.app.push_screen(ConfirmScreen(question), confirmed)
+
+    def _save_org_with_writes(self, org: SfOrg) -> None:
+        """Writes are a setting of saved connections, so the org becomes one."""
+        name = org.alias if org.alias and NAME_PATTERN.match(org.alias) else "sf-" + re.sub(r"[^A-Za-z0-9_-]+", "-", org.name).strip("-")
+        config = load_or_new("global", self.cwd)
+        if name in config.connections:
+            self.notify(f"There's already a saved connection called {name}; press w on it.", timeout=6)
+            return
+
+        def confirmed(yes: bool | None) -> None:
+            if yes:
+                set_allow_writes(save_connection(config, name, {"url": f"sf:{org.name}"}, {}), name, True)
+                self.refresh_list()
+                index = next(i for i, saved in enumerate(self.saved) if saved.name == name and saved.config.scope == "global")
+                option_list = self.query_one(OptionList)
+                option_list.highlighted = option_list.get_option_index(f"saved-{index}")
+
+        warning = "This is a PRODUCTION org: imports change live data. " if org.kind == "production" else ""
+        question = (
+            f"{warning}Save {org.name} as the global connection {name}, with writes allowed? "
+            "The Import tab will be able to insert, update and delete its records."
+        )
         self.app.push_screen(ConfirmScreen(question), confirmed)
 
     def action_delete(self) -> None:
@@ -354,7 +427,7 @@ class ConnectionForm(ModalScreen[Saved | None]):
     @work(thread=True, exclusive=True)
     def _test(self, target: Target) -> None:
         try:
-            db = Database(target)
+            db = open_database(target)
             try:
                 info = db.server_info()
             finally:

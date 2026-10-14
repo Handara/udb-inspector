@@ -217,7 +217,7 @@ def test_password_dialog(sample_db, monkeypatch):
                 raise ConnectError("FATAL: password authentication failed")
             return super().server_info()
 
-    monkeypatch.setattr(app_module, "Database", NeedsPassword)
+    monkeypatch.setattr(app_module, "open_database", NeedsPassword)
     target = Target(URL.create("postgresql+psycopg", username="app", host="db", database="shop"), "test")
     app = InspectorApp(target)
 
