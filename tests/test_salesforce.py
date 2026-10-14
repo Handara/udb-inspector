@@ -493,3 +493,24 @@ def test_query_an_org_in_the_app(monkeypatch):
         assert panel.result.rows[0][1] == "Name 050"
 
     run(app, scenario)
+
+
+def test_soql_hints_in_the_editor(monkeypatch):
+    monkeypatch.setattr(app_module, "open_database", lambda target: query_org())
+    app = InspectorApp(detect("sf:uat"))
+
+    async def scenario(pilot):
+        await settle(pilot)
+        app.action_query()
+        editor = app.query_panel.editor
+        editor.text = "SELECT  FROM Contact WHERE Kind = "
+        editor.move_cursor((0, 7))
+        await settle(pilot)  # Contact's describe loads in the background, then the hints refresh
+        assert [item.label for item in editor.suggestions[:3]] == ["Id", "LastName", "Kind"]
+        console = Console(file=io.StringIO(), width=140)
+        console.print(app.query_panel.query_one("#hints").content)
+        assert "Fields of Contact:  Id Id  |  LastName Text(80)  |  Kind Picklist" in console.file.getvalue()
+        await pilot.press("f1")
+        assert "SOQL cheat sheet" in str(app.screen.query_one(".title").content)
+
+    run(app, scenario)

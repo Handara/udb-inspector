@@ -280,7 +280,7 @@ class QueryPanel(Vertical):
         """The connected database's query language: its SQL dialect, or SOQL."""
         dialect = self.app.info.dialect
         if self._language is None or self._language.dialect != dialect:
-            self._language = language_for(dialect)
+            self._language = language_for(dialect, self.app.db)
         return self._language
 
     def _tables(self) -> list[tuple[str, str, str]]:
@@ -341,11 +341,7 @@ class QueryPanel(Vertical):
         if listing.display:
             lines.append(key_hints(("↑↓ tab", "choose"), ("enter", "insert"), ("esc", "back")))
         elif editor.suggestions and not editor.dismissed:
-            heading = {
-                "table": "Tables",
-                "statement": "Start with",
-            }.get(context.kind, f"Columns of {context.qualifier}" if context.qualifier else "Suggestions")
-            line = Text(f"{heading}:  ", style="dim", no_wrap=True, overflow="ellipsis")
+            line = Text(f"{self.language.heading(context)}:  ", style="dim", no_wrap=True, overflow="ellipsis")
             for index, item in enumerate(editor.suggestions[:8]):
                 if index:
                     line.append("  |  ", style="dim")
@@ -356,7 +352,7 @@ class QueryPanel(Vertical):
                 line.append(f"  +{len(editor.suggestions) - 8} more", style="dim")
             lines.append(line)
         elif context.kind == "column" and not context.scope and editor.text.strip():
-            lines.append(Text("Name a table after FROM to get its columns.", style="dim"))
+            lines.append(Text(self.language.no_scope, style="dim"))
         warnings = self._notes + self._grouping + ([self._syntax] if self._syntax else [])
         if warnings:
             more = f"   (+{len(warnings) - 1} more)" if len(warnings) > 1 else ""
@@ -379,6 +375,7 @@ class QueryPanel(Vertical):
         self.paged, self.sql, self.columns, self.search, self.total, self.has_more = False, "", [], "", None, False
         self._columns.clear()
         self._loading.clear()
+        self._language = None  # the next connection may speak another language
         self.grid.clear(columns=True)
         self.query_one("#status", Static).update("")
         self.query_one("#pager", Static).update("")

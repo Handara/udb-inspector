@@ -307,6 +307,13 @@ class SalesforceOrg:
         names = sorted((raw["name"] for raw in self.objects() if raw.get("queryable")), key=str.lower)
         return [Relation(schema, name, "object") for name in names]
 
+    def cached_describe(self, name: str) -> dict | None:
+        """A describe already fetched, for hints that mustn't wait on the network."""
+        return self._describes.get(name.lower())
+
+    def object_labels(self) -> dict[str, str]:
+        return {raw["name"]: raw.get("label") or raw["name"] for raw in self._objects or []}
+
     def describe_object(self, name: str) -> dict:
         key = name.lower()
         if key not in self._describes:

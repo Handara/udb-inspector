@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from . import hints, soql, sql
+from . import hints, soql, soql_hints, sql
 from .hints import Context, Suggestion, TableRef
 
 
@@ -50,6 +50,14 @@ class SqlLanguage:
     def cheat_sheet(self) -> list[tuple[str, str]]:
         return hints.cheat_sheet(self.dialect)
 
+    def heading(self, context: Context) -> str:
+        """What the suggestions on the hint line are."""
+        return {"table": "Tables", "statement": "Start with"}.get(
+            context.kind, f"Columns of {context.qualifier}" if context.qualifier else "Suggestions"
+        )
+
+    no_scope = "Name a table after FROM to get its columns."
+
     def paging_note(self, rows: int, paged: bool | None, statement: str, reordered: bool) -> str:
         """What udbi does to a query to page it. paged is None before the first run."""
         if paged is None:
@@ -68,10 +76,22 @@ class SqlLanguage:
 
 
 class SoqlLanguage:
-    """SOQL, for Salesforce. Suggestions and explanations come with SOQL hints."""
+    """SOQL, for Salesforce, with hints from the org's describes."""
 
     dialect = "salesforce"
     title = "SOQL"
+    no_scope = "Name an object after FROM to get its fields."
+
+    def __init__(self, db=None):
+        self.db = db
+        self._load: Callable[[TableRef], object] | None = None
+
+    def _describe(self, name: str) -> dict | None:
+        """A cached describe; one that isn't loaded yet is asked for, and the hints refresh when it arrives."""
+        found = self.db.cached_describe(name) if self.db is not None else None
+        if found is None and self._load is not None:
+            self._load(TableRef(None, name, None))
+        return found
 
     def statement_range_at(self, text: str, offset: int) -> tuple[int, int]:
         return soql.statement_range_at(text, offset)
@@ -80,29 +100,39 @@ class SoqlLanguage:
         return soql.statement_at(text, offset)
 
     def syntax_problem(self, statement: str) -> str | None:
-        return None
+        return soql_hints.syntax_problem(statement)
 
     def grouping_problems(self, statement: str) -> list[str]:
         return []
 
-    def context_at(self, text: str, offset: int) -> Context:
-        return Context("none")
+    def context_at(self, text: str, offset: int) -> soql_hints.SoqlContext:
+        return soql_hints.context_at(text, offset)
 
     def suggest(self, context, tables, columns, quote) -> list[Suggestion]:
-        return []
+        self._load = columns
+        labels = self.db.object_labels() if self.db is not None else {}
+        objects = [(name, labels.get(name, name)) for _, name, _ in tables]
+        return soql_hints.suggest(context, objects, self._describe)
 
     def notes(self, statement: str) -> list[str]:
-        return []
+        return soql_hints.notes(statement)
 
     def explain(self, statement: str, cursor: int) -> str | None:
-        return None
+        return soql_hints.explain(statement, cursor, self._describe)
+
+    def heading(self, context) -> str:
+        if context.kind == "column":
+            owner = context.qualifier or (context.scope[0].name if context.scope else None)
+            return f"Fields of {owner}" if owner else "Suggestions"
+        return {"table": "Children" if getattr(context, "parent", None) else "Objects", "statement": "Start with",
+                "value": f"Values of {getattr(context, 'subject', '')}", "keyword": "Next", "scope": "Scopes"}.get(context.kind, "Suggestions")
 
     def tables_in(self, statement: str) -> list[TableRef]:
         query = soql.parse(statement)
         return [TableRef(None, query.object, None)] if query is not None and query.object else []
 
     def cheat_sheet(self) -> list[tuple[str, str]]:
-        return []
+        return soql_hints.CHEAT_SHEET
 
     def paging_note(self, rows: int, paged: bool | None, statement: str, reordered: bool) -> str:
         if paged is None:
@@ -118,5 +148,5 @@ class SoqlLanguage:
         return note
 
 
-def language_for(dialect: str) -> SqlLanguage | SoqlLanguage:
-    return SoqlLanguage() if dialect == "salesforce" else SqlLanguage(dialect)
+def language_for(dialect: str, db=None) -> SqlLanguage | SoqlLanguage:
+    return SoqlLanguage(db) if dialect == "salesforce" else SqlLanguage(dialect)

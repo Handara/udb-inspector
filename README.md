@@ -334,6 +334,17 @@ Salesforce again. `FOR VIEW`, `FOR REFERENCE`, `FOR UPDATE` and `UPDATE
 TRACKING`/`VIEWSTAT` are refused: they write view statistics or lock records.
 Export streams every record, batch by batch.
 
+The editor's hints know SOQL and the org: after `FROM` the objects (or, in a
+child subquery, the parent's child relationships), in the field list the
+object's fields with their types and labels, `Owner.` walks to the user's
+fields, and each child relationship is offered as a subquery. After `Status =`
+or `IN (` come the picklist's active values, after a date field the date
+literals (`LAST_N_DAYS:30`, `THIS_QUARTER`, …). The line below explains the
+field, date literal or keyword under the cursor, with the field's help text and
+formula, and warns about SQL habits SOQL doesn't share: `*`, `JOIN`, `IS NULL`,
+`COUNT(*)`, double quotes, quoted dates, `FIELDS(ALL)` without `LIMIT 200`. F1
+has a SOQL cheat sheet.
+
 ## How the database type is detected
 
 | Target | Detection |
