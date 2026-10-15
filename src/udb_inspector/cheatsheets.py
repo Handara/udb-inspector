@@ -378,7 +378,8 @@ KEYS: list[tuple[str, str, tuple[str, ...]]] = [
     ("x or ctrl+s", "export to CSV, Excel, JSON or the clipboard", ("x", "ctrl+s")),
     ("enter", "record: open what a foreign key points to, or query a related table", ()),
     ("c   esc", "record: copy the value, go back", ("c", "escape")),
-    ("ctrl+v   ctrl+l", "import: paste rows copied from a spreadsheet, clear them", ("ctrl+l",)),
+    ("ctrl+l", "clear the editor (ctrl+z brings it back), or the rows pasted into Import", ("ctrl+l",)),
+    ("ctrl+v", "import: paste rows copied from a spreadsheet", ()),
     ("F1", "this cheat sheet: ←/→ or tab for its pages, or a page's number", ("f1",)),
 ]
 

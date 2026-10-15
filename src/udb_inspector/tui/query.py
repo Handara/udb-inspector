@@ -144,6 +144,7 @@ class QueryPanel(Vertical):
         Binding("left_square_bracket", "page(-1)", "Previous page", show=False),
         Binding("right_square_bracket", "page(1)", "Next page", show=False),
         Binding("slash", "focus_search", "Search results", show=False),
+        Binding("ctrl+l", "clear_editor", "Clear"),
     ]
 
     def __init__(self, **kwargs) -> None:
@@ -365,6 +366,13 @@ class QueryPanel(Vertical):
         if not lines:
             lines.append(self._default_hints())
         self.query_one("#hints", Static).update(Group(*lines[:3]))  # a Group keeps each line's no_wrap
+
+    def action_clear_editor(self) -> None:
+        """Empty the editor; ctrl+z brings the text back. The results stay."""
+        if self.editor.text:
+            self.editor.clear()
+            self.notify("Cleared the editor. ctrl+z brings it back.", timeout=3)
+        self.editor.focus()
 
     def action_cheat_sheet(self) -> None:
         if self.app.info is not None:
