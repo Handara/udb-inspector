@@ -28,7 +28,7 @@ WINDOWS = sys.platform == "win32"
 
 # Drivers bundled into the program. SQLite needs nothing extra.
 EXTRAS = "postgres,mysql,oracle,duckdb"
-DRIVER_PACKAGES = ["psycopg", "psycopg_binary", "pymysql", "oracledb", "cryptography", "duckdb", "duckdb_engine"]
+DRIVER_PACKAGES = ["psycopg", "psycopg_binary", "pymysql", "oracledb", "cryptography", "duckdb", "duckdb_engine", "pytz"]
 
 # PyInstaller follows imports; these are loaded dynamically and must be listed.
 PYINSTALLER_ARGS = [
