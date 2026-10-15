@@ -131,6 +131,16 @@ ModalScreen {
     width: 60;
 }
 
+.dialog.cheat-sheet {
+    width: 130;
+    height: 90%;
+}
+
+.cheat-sheet #sheet {
+    height: 1fr;
+    margin-top: 1;
+}
+
 .dialog .title {
     text-style: bold;
     margin-bottom: 1;

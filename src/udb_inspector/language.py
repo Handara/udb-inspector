@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from . import hints, soql, soql_hints, sql
+from . import cheatsheets, hints, soql, soql_hints, sql
 from .hints import Context, Suggestion, TableRef
 
 
@@ -49,6 +49,9 @@ class SqlLanguage:
 
     def cheat_sheet(self) -> list[tuple[str, str]]:
         return hints.cheat_sheet(self.dialect)
+
+    def cheat_sheet_pages(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        return cheatsheets.sql_pages(self.dialect)
 
     def heading(self, context: Context) -> str:
         """What the suggestions on the hint line are."""
@@ -133,6 +136,9 @@ class SoqlLanguage:
 
     def cheat_sheet(self) -> list[tuple[str, str]]:
         return soql_hints.CHEAT_SHEET
+
+    def cheat_sheet_pages(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        return cheatsheets.soql_pages()
 
     def paging_note(self, rows: int, paged: bool | None, statement: str, reordered: bool) -> str:
         if paged is None:

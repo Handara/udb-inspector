@@ -166,7 +166,7 @@ the connected database, such as `LIMIT` for PostgreSQL and `TOP` or
 | `enter` | In the list: insert the highlighted suggestion. Typing a letter goes back to the editor. Picking a table for `SELECT FROM …` puts the cursor between `SELECT` and `FROM`, ready for its columns |
 | `alt+←` `alt+→` | Move the cursor by word in the editor |
 | `esc` | Walks outward: hides the suggestions, then leaves the editor for the results, then the tables |
-| `F1` | Cheat sheet for the connected database: limiting rows, paging, quoting, dates, text, catalog queries |
+| `F1` | Cheat sheet written for the connected database, in pages (←/→, or a page's number): basics, joins, grouping and window functions, dates, text, NULLs, subqueries, JSON, inspecting the database, performance, and udbi's keys |
 
 The bar also warns about syntax from other databases (`LIMIT` on SQL Server,
 `||` on MySQL, `"bob"` meaning a column in PostgreSQL, `NOW()` on SQL Server,
@@ -343,7 +343,8 @@ literals (`LAST_N_DAYS:30`, `THIS_QUARTER`, …). The line below explains the
 field, date literal or keyword under the cursor, with the field's help text and
 formula, and warns about SQL habits SOQL doesn't share: `*`, `JOIN`, `IS NULL`,
 `COUNT(*)`, double quotes, quoted dates, `FIELDS(ALL)` without `LIMIT 200`. F1
-has a SOQL cheat sheet.
+has a SOQL cheat sheet: relationships, filters, date literals, aggregates, handy
+admin queries (permissions, flows, failed jobs, logins), gotchas and `sf` commands.
 
 `o` opens a record with every field, fetched by its Id. A lookup opens the
 record it points at, and polymorphic ones (`WhoId`, `OwnerId`) go to the right

@@ -24,6 +24,7 @@ from ..database import MAX_ROWS, Page, QueryError, QueryResult, Relation
 from ..hints import Context, Suggestion, TableRef
 from ..language import SoqlLanguage, SqlLanguage, language_for
 from ..sql import ReadOnlyError, statement_range_at
+from .cheatsheet import CheatSheetScreen
 from .record import RecordScreen
 from .screens import ConfirmScreen, form_row, key_hints
 from .values import CellScreen, cell, plain, sort_key
@@ -907,27 +908,3 @@ class ExportScreen(ModalScreen[ExportRequest | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
-
-
-class CheatSheetScreen(ModalScreen[None]):
-    BINDINGS = [Binding("escape,f1", "close", "Close")]
-
-    def __init__(self, language: SqlLanguage | SoqlLanguage):
-        super().__init__()
-        self.language = language
-
-    def compose(self) -> ComposeResult:
-        from rich.table import Table
-
-        table = Table(box=None, show_header=False, padding=(0, 2, 0, 0))
-        table.add_column(style="dim")
-        table.add_column(style="bold")
-        for topic, snippet in self.language.cheat_sheet():
-            table.add_row(topic, snippet)
-        with Vertical(classes="dialog"):
-            yield Label(f"{self.language.title} cheat sheet", classes="title", markup=False)
-            yield Static(table)
-            yield Label(key_hints(("esc", "close")), classes="hint")
-
-    def action_close(self) -> None:
-        self.dismiss()
